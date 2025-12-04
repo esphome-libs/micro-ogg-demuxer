@@ -38,7 +38,7 @@ cmake --build .
 This library is designed to be included as a submodule in codec wrapper projects:
 
 ```bash
-git submodule add https://github.com/kahrendt/micro-ogg-demuxer.git
+git submodule add https://github.com/esphome-libs/micro-ogg-demuxer.git
 ```
 
 Then in your CMakeLists.txt:
