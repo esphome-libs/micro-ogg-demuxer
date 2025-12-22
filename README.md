@@ -1,5 +1,7 @@
 # microOggDemuxer
 
+[![CI](https://github.com/esphome-libs/micro-ogg-demuxer/actions/workflows/ci.yml/badge.svg)](https://github.com/esphome-libs/micro-ogg-demuxer/actions/workflows/ci.yml)
+
 A lightweight, platform-agnostic Ogg container demuxer for embedded systems and general use.
 
 ## Features

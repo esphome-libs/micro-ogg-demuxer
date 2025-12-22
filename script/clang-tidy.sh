@@ -33,14 +33,19 @@ if [ -z "$CLANG_TIDY" ]; then
     exit 1
 fi
 
-# Check for compile_commands.json
+# Ensure compile_commands.json exists
 if [ ! -f "${BUILD_DIR}/compile_commands.json" ]; then
-    echo "Error: compile_commands.json not found in ${BUILD_DIR}"
-    echo "Run: cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON .."
-    exit 1
+    echo "Generating compile_commands.json..."
+    cmake -B "$BUILD_DIR" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON "$ROOT_DIR"
 fi
 
-SOURCES="${ROOT_DIR}/src/ogg_demuxer.cpp"
+# Find all C++ source files
+SOURCES=$(find "$ROOT_DIR/src" -name '*.cpp' -o -name '*.c' 2>/dev/null || true)
+
+if [ -z "$SOURCES" ]; then
+    echo "No source files found"
+    exit 0
+fi
 
 # Parse arguments
 FIX_FLAG=""
