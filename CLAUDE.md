@@ -31,7 +31,7 @@ microOggDemuxer is a lightweight, platform-agnostic Ogg container demuxer for em
 
 **Memory model**:
 
-- Lazy allocation on first `getNextPacket()` call
+- Lazy allocation on first `get_next_packet()` call
 - `page_header_staging_` (282 bytes) - Fixed buffer for header accumulation
 - `internal_buffer_` - Dynamic buffer that grows from `min_buffer_size` to `max_buffer_size`
 - Custom allocators supported via `OggDemuxerConfig`
@@ -46,4 +46,4 @@ microOggDemuxer is a lightweight, platform-agnostic Ogg container demuxer for em
 
 ## Debug Mode
 
-Define `MICRO_OGG_DEMUXER_DEBUG` to enable statistics tracking (`getStats()`, `getBufferStats()`, `getDebugState()`).
+Define `MICRO_OGG_DEMUXER_DEBUG` to enable statistics tracking (`get_stats()`, `get_buffer_stats()`, `get_debug_state()`).

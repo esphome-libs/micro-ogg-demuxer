@@ -89,7 +89,7 @@ struct OggPacket {
 };
 
 /**
- * @brief Demuxer state after getNextPacket() call
+ * @brief Demuxer state after get_next_packet() call
  *
  * Contains both the result code and packet data (when result == OGG_OK).
  * The packet field is only valid when result == OGG_OK.
@@ -140,7 +140,7 @@ struct OggDemuxerConfig {
  * - Internal buffering only occurs when packets span page or input buffer boundaries
  *
  * Memory allocation:
- * - Buffers are allocated on first call to getNextPacket()
+ * - Buffers are allocated on first call to get_next_packet()
  * - page_header_staging_ (282 bytes): Header accumulation and segment table storage
  * - internal_buffer_: Packet assembly buffer (starts at min_buffer_size, grows as needed)
  * - All buffers use configurable allocator (malloc/free by default)
@@ -153,7 +153,7 @@ public:
      * @brief Construct OggDemuxer with configurable settings
      *
      * Note: Internal buffer is NOT allocated in constructor.
-     * It will be allocated lazily on first call to getNextPacket().
+     * It will be allocated lazily on first call to get_next_packet().
      *
      * The buffer starts at config.min_buffer_size and grows dynamically up to
      * config.max_buffer_size as needed. Typical audio packets fit within the
@@ -166,7 +166,7 @@ public:
      *       the final packet on a page is ready - if validation fails, that packet
      *       returns OGG_CRC_FAILED, but earlier packets from the same page were already
      *       returned with OGG_OK. If you enable CRC, you must buffer packet data (copying
-     *       it, since the data pointer is only valid until the next getNextPacket() call)
+     *       it, since the data pointer is only valid until the next get_next_packet() call)
      *       and defer processing until is_last_on_page is true, then discard all buffered
      *       packets if OGG_CRC_FAILED is returned.
      */
@@ -190,7 +190,7 @@ public:
      *
      * Usage:
      * @code
-     * OggDemuxState state = demuxer.getNextPacket(input, input_len);
+     * OggDemuxState state = demuxer.get_next_packet(input, input_len);
      * if (state.result == OGG_OK) {
      *     // Use state.packet.data, state.packet.length, etc.
      * }
@@ -198,7 +198,7 @@ public:
      * input_len -= state.bytes_consumed;
      * @endcode
      */
-    OggDemuxState getNextPacket(const uint8_t* input, size_t input_len);
+    OggDemuxState get_next_packet(const uint8_t* input, size_t input_len);
 
     /**
      * @brief Reset demuxer state
@@ -212,9 +212,9 @@ public:
      * Codec-specific wrappers can use this to enforce codec-specific validation rules.
      *
      * @return true if current page has continued packet flag set, false otherwise
-     * @note Only valid after a successful call to getNextPacket() that returned a packet
+     * @note Only valid after a successful call to get_next_packet() that returned a packet
      */
-    bool currentPageHasContinuedFlag() const;
+    bool current_page_has_continued_flag() const;
 
     /**
      * @brief Get whether the previous page ended with a continued packet
@@ -224,14 +224,14 @@ public:
      *
      * @return true if previous page ended with lacing value 255, false otherwise
      */
-    bool previousPageEndedWithContinuedPacket() const;
+    bool previous_page_ended_with_continued_packet() const;
 
 #ifdef MICRO_OGG_DEMUXER_DEBUG
     /**
      * @brief Get debug state information
      */
-    void getDebugState(int& state, bool& assembling, bool& skipping, size_t& packet_size,
-                       size_t& body_consumed, uint8_t& seg_index, uint8_t& seg_count) const {
+    void get_debug_state(int& state, bool& assembling, bool& skipping, size_t& packet_size,
+                         size_t& body_consumed, uint8_t& seg_index, uint8_t& seg_count) const {
         state = static_cast<int>(state_);
         assembling = assembling_packet_;
         skipping = skipping_packet_;
@@ -246,7 +246,7 @@ public:
      * @param zero_copy_count Output: number of packets returned via zero-copy
      * @param buffered_count Output: number of packets that required buffering
      */
-    void getStats(size_t& zero_copy_count, size_t& buffered_count) const {
+    void get_stats(size_t& zero_copy_count, size_t& buffered_count) const {
         zero_copy_count = zero_copy_packets_;
         buffered_count = buffered_packets_;
     }
@@ -256,7 +256,7 @@ public:
      * @param current_capacity Output: current internal buffer capacity in bytes
      * @param peak_capacity Output: peak internal buffer capacity reached in bytes
      */
-    void getBufferStats(size_t& current_capacity, size_t& peak_capacity) const {
+    void get_buffer_stats(size_t& current_capacity, size_t& peak_capacity) const {
         current_capacity = internal_buffer_capacity_;
         peak_capacity = peak_buffer_capacity_;
     }
@@ -285,58 +285,59 @@ private:
     };
 
     // Parse Ogg page header from raw bytes
-    OggDemuxResult parsePageHeader(const uint8_t* data, size_t data_len, OggPageHeader& header,
-                                   size_t& header_size);
+    OggDemuxResult parse_page_header(const uint8_t* data, size_t data_len, OggPageHeader& header,
+                                     size_t& header_size);
 
     // Sum segment table lacing values to get total page body size
-    size_t calculateBodySize(const uint8_t* segment_table, uint8_t segment_count);
+    size_t calculate_body_size(const uint8_t* segment_table, uint8_t segment_count);
 
     // Grow internal buffer to accommodate needed_size bytes
-    GrowBufferResult growBuffer(size_t needed_size);
+    GrowBufferResult grow_buffer(size_t needed_size);
 
     // Advance segment tracking by specified number of bytes
-    void advanceThroughSegments(size_t bytes_to_advance);
+    void advance_through_segments(size_t bytes_to_advance);
 
     // Scan segment table from start_segment_index to find next packet boundary
-    PacketInfo scanForNextPacket(uint8_t start_segment_index) const;
+    PacketInfo scan_for_next_packet(uint8_t start_segment_index) const;
 
     // Return a zero-copy packet directly from input buffer
-    void handleZeroCopyReturn(const uint8_t* packet_ptr, const PacketInfo& packet_info,
-                              size_t additional_bytes_consumed, OggDemuxState& state);
+    void handle_zero_copy_return(const uint8_t* packet_ptr, const PacketInfo& packet_info,
+                                 size_t additional_bytes_consumed, OggDemuxState& state);
 
     // Compare incremental CRC against stored page checksum
-    OggDemuxResult validatePageCRC() const;
+    OggDemuxResult validate_page_crc() const;
 
     // Lazily allocate page_header_staging_ and internal_buffer_ on first use
-    bool ensureBuffersAllocated(OggDemuxState& state);
+    bool ensure_buffers_allocated(OggDemuxState& state);
 
     // Handle STATE_EXPECT_PAGE_HEADER and STATE_ACCUMULATING_PAGE_HEADER
-    InternalResult handlePageHeader(const uint8_t* input, size_t input_len, OggDemuxState& state);
+    InternalResult handle_page_header(const uint8_t* input, size_t input_len, OggDemuxState& state);
 
     // Skip packets that exceed max_buffer_size without buffering
-    void handleSkippingPacket(const uint8_t* input, size_t input_len, OggDemuxState& state);
+    void handle_skipping_packet(const uint8_t* input, size_t input_len, OggDemuxState& state);
 
     // Buffer and assemble packets spanning pages or input boundaries
-    void handleAssemblingPacket(const uint8_t* input, size_t input_len, OggDemuxState& state);
+    void handle_assembling_packet(const uint8_t* input, size_t input_len, OggDemuxState& state);
 
     // Attempt zero-copy return, fall back to assembly mode if not possible
-    InternalResult handleZeroCopyPath(const uint8_t* input, size_t input_len, OggDemuxState& state);
+    InternalResult handle_zero_copy_path(const uint8_t* input, size_t input_len,
+                                         OggDemuxState& state);
 
     // Return assembled packet from internal_buffer_ with state updates
-    void returnAssembledPacket(size_t bytes_consumed, OggDemuxState& state);
+    void return_assembled_packet(size_t bytes_consumed, OggDemuxState& state);
 
     // Check if current segment position is at a packet boundary
-    bool isAtPacketBoundary() const;
+    bool is_at_packet_boundary() const;
 
     // Validate CRC and transition to STATE_EXPECT_PAGE_HEADER when page is consumed
-    bool finalizePage(OggDemuxState& state);
+    bool finalize_page(OggDemuxState& state);
 
     // Accumulate partial header bytes into page_header_staging_
-    InternalResult accumulateHeader(const uint8_t* input, size_t input_len, size_t& bytes_added,
-                                    OggDemuxState& state);
+    InternalResult accumulate_header(const uint8_t* input, size_t input_len, size_t& bytes_added,
+                                     OggDemuxState& state);
 
     // Validate BOS/EOS flags, serial number, and page sequence per RFC 3533
-    bool validateStreamConsistency(OggDemuxState& state);
+    bool validate_stream_consistency(OggDemuxState& state);
 
     // Demuxer state
     enum State : uint8_t {
