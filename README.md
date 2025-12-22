@@ -281,8 +281,18 @@ Buffer growth strategy:
 For typical audio streams:
 
 - Initial allocation: 1 KB
-- Typical usage: 1-2 KB (covers 99% of packets)
+- Typical usage: 1-2 KB
 - Maximum allocation: 8 KB (configurable)
+
+### Zero-Copy Effectiveness
+
+Zero-copy optimization occurs when a complete packet fits within your input buffer without spanning buffer or page boundaries. The actual zero-copy rate depends heavily on:
+
+- **Input buffer size**: Larger buffers increase zero-copy likelihood
+- **Codec packet sizes**: Opus packets (~50-300 bytes) are smaller than FLAC packets
+- **Ogg page structure**: Packets spanning pages always require internal buffering
+
+As a reference point: with a 4 KB input buffer and Ogg Opus audio, approximately 95-99% of packets use zero-copy. Your results will vary based on your specific buffer size, codec, and encoding settings.
 
 ## License
 
