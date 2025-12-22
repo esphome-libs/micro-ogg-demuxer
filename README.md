@@ -58,7 +58,7 @@ target_link_libraries(your_target PRIVATE micro_ogg_demuxer)
 micro_ogg::OggDemuxer demuxer;
 
 while (have_data) {
-    micro_ogg::OggDemuxState state = demuxer.getNextPacket(input_ptr, input_len);
+    micro_ogg::OggDemuxState state = demuxer.get_next_packet(input_ptr, input_len);
 
     if (state.result == micro_ogg::OGG_OK) {
         // Process packet
@@ -153,10 +153,10 @@ struct OggPacket {
 
 ### Main Methods
 
-#### `getNextPacket()`
+#### `get_next_packet()`
 
 ```cpp
-OggDemuxState getNextPacket(const uint8_t* input, size_t input_len);
+OggDemuxState get_next_packet(const uint8_t* input, size_t input_len);
 ```
 
 Demux input and return next complete packet. Returns struct containing:
@@ -175,7 +175,7 @@ Reset demuxer state. Does not deallocate buffers.
 
 ## Memory Usage
 
-The demuxer allocates buffers on first call to `getNextPacket()`:
+The demuxer allocates buffers on first call to `get_next_packet()`:
 
 | Buffer                | Size       | Description                           |
 | --------------------- | ---------- | ------------------------------------- |
@@ -207,7 +207,7 @@ For most use cases, leave CRC disabled (the default). Consider enabling CRC only
 
 If you enable CRC and want strict validation before processing packets, you must manually buffer packet data and track page boundaries:
 
-1. **Copy packet data** - The `packet.data` pointer is only valid until the next `getNextPacket()` call, so you must copy the data to your own buffer
+1. **Copy packet data** - The `packet.data` pointer is only valid until the next `get_next_packet()` call, so you must copy the data to your own buffer
 2. **Track page boundaries** - Use `packet.is_last_on_page` to know when a page ends
 3. **Check for CRC errors** - CRC validation occurs when the last packet on a page is processed. If validation fails, `OGG_CRC_FAILED` is returned instead of `OGG_OK` for that final packet
 4. **Discard on failure** - If CRC fails, discard all buffered packets from that page (the earlier packets that were returned successfully)
@@ -216,7 +216,7 @@ If you enable CRC and want strict validation before processing packets, you must
 std::vector<std::vector<uint8_t>> page_packets;
 
 while (have_data) {
-    auto state = demuxer.getNextPacket(input, len);
+    auto state = demuxer.get_next_packet(input, len);
 
     if (state.result == OGG_OK) {
         // Copy packet data (pointer only valid until next call)

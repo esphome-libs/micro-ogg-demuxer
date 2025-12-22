@@ -40,11 +40,11 @@ constexpr size_t OGG_SEQUENCE_OFFSET = 18;  // Offset to page_sequence field
 constexpr size_t OGG_CHECKSUM_OFFSET = 22;  // Offset to checksum field
 
 // Little-endian helpers
-static inline uint32_t readLe32(const uint8_t* p) {
+static inline uint32_t read_le32(const uint8_t* p) {
     return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24);
 }
 
-static inline uint64_t readLe64(const uint8_t* p) {
+static inline uint64_t read_le64(const uint8_t* p) {
     return static_cast<uint64_t>(p[0]) | (static_cast<uint64_t>(p[1]) << 8) |
            (static_cast<uint64_t>(p[2]) << 16) | (static_cast<uint64_t>(p[3]) << 24) |
            (static_cast<uint64_t>(p[4]) << 32) | (static_cast<uint64_t>(p[5]) << 40) |
@@ -86,7 +86,7 @@ static const uint32_t crc_lookup[256] = {
     0x89b8fd09, 0x8d79e0be, 0x803ac667, 0x84fbdbd0, 0x9abc8bd5, 0x9e7d9662, 0x933eb0bb, 0x97ffad0c,
     0xafb010b1, 0xab710d06, 0xa6322bdf, 0xa2f33668, 0xbcb4666d, 0xb8757bda, 0xb5365d03, 0xb1f740b4};
 
-static uint32_t calculateCrc32(const uint8_t* buffer, size_t size, uint32_t crc) {
+static uint32_t calculate_crc32(const uint8_t* buffer, size_t size, uint32_t crc) {
     while (size >= 8) {
         crc ^= (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
@@ -187,11 +187,11 @@ void OggDemuxer::reset() {
 #endif
 }
 
-bool OggDemuxer::currentPageHasContinuedFlag() const {
+bool OggDemuxer::current_page_has_continued_flag() const {
     return (current_page_.header_type & OGG_CONTINUED_PACKET) != 0;
 }
 
-bool OggDemuxer::previousPageEndedWithContinuedPacket() const {
+bool OggDemuxer::previous_page_ended_with_continued_packet() const {
     return previous_page_ended_with_continued_packet_;
 }
 
@@ -199,7 +199,7 @@ bool OggDemuxer::previousPageEndedWithContinuedPacket() const {
 // PUBLIC API: Packet Demuxing
 // ==============================================================================
 
-OggDemuxState OggDemuxer::getNextPacket(const uint8_t* input, size_t input_len) {
+OggDemuxState OggDemuxer::get_next_packet(const uint8_t* input, size_t input_len) {
     OggDemuxState state{};
 
     // Validate input parameters
@@ -215,7 +215,7 @@ OggDemuxState OggDemuxer::getNextPacket(const uint8_t* input, size_t input_len) 
     }
 
     // Lazy allocation: allocate buffers on first use
-    if (!ensureBuffersAllocated(state)) {
+    if (!ensure_buffers_allocated(state)) {
         return state;
     }
 
@@ -231,7 +231,7 @@ OggDemuxState OggDemuxer::getNextPacket(const uint8_t* input, size_t input_len) 
         // PHASE A: PAGE HEADER PARSING
         // ======================================================================
         if (state_ == STATE_EXPECT_PAGE_HEADER || state_ == STATE_ACCUMULATING_PAGE_HEADER) {
-            InternalResult result = handlePageHeader(input, input_len, state);
+            InternalResult result = handle_page_header(input, input_len, state);
             if (result != InternalResult::OK) {
                 return state;  // NEED_MORE_DATA or PACKET_READY (including errors)
             }
@@ -246,18 +246,18 @@ OggDemuxState OggDemuxer::getNextPacket(const uint8_t* input, size_t input_len) 
         if (state_ == STATE_PROCESSING_SEGMENTS) {
             // ===== Case 0: Skipping Packet (Too Large to Buffer) =====
             if (skipping_packet_) {
-                handleSkippingPacket(input, input_len, state);
+                handle_skipping_packet(input, input_len, state);
                 return state;
             }
 
             // ===== Case 1: Assembling Packet (Greedy Buffering) =====
             if (assembling_packet_) {
-                handleAssemblingPacket(input, input_len, state);
+                handle_assembling_packet(input, input_len, state);
                 return state;
             }
 
             // ===== Case 2: Zero-Copy Mode =====
-            handleZeroCopyPath(input, input_len, state);
+            handle_zero_copy_path(input, input_len, state);
             return state;
         }
     }
@@ -267,8 +267,8 @@ OggDemuxState OggDemuxer::getNextPacket(const uint8_t* input, size_t input_len) 
 // PRIVATE HELPERS: Page Header Parsing
 // ==============================================================================
 
-OggDemuxResult OggDemuxer::parsePageHeader(const uint8_t* data, size_t data_len,
-                                           OggPageHeader& header, size_t& header_size) {
+OggDemuxResult OggDemuxer::parse_page_header(const uint8_t* data, size_t data_len,
+                                             OggPageHeader& header, size_t& header_size) {
     // Minimum header size: 27 bytes + segment_count
     if (data_len < OGG_PAGE_HEADER_SIZE) {
         return OGG_NEED_MORE_DATA;
@@ -288,10 +288,10 @@ OggDemuxResult OggDemuxer::parsePageHeader(const uint8_t* data, size_t data_len,
     std::memcpy(header.capture_pattern, data, 4);
     header.version = data[4];
     header.header_type = data[5];
-    header.granule_position = readLe64(data + OGG_GRANULE_OFFSET);
-    header.stream_serial = readLe32(data + OGG_SERIAL_OFFSET);
-    header.page_sequence = readLe32(data + OGG_SEQUENCE_OFFSET);
-    header.checksum = readLe32(data + OGG_CHECKSUM_OFFSET);
+    header.granule_position = read_le64(data + OGG_GRANULE_OFFSET);
+    header.stream_serial = read_le32(data + OGG_SERIAL_OFFSET);
+    header.page_sequence = read_le32(data + OGG_SEQUENCE_OFFSET);
+    header.checksum = read_le32(data + OGG_CHECKSUM_OFFSET);
     header.segment_count = data[OGG_SEGMENT_COUNT_OFFSET];
 
     // Total header size = 27 + segment_count
@@ -305,14 +305,14 @@ OggDemuxResult OggDemuxer::parsePageHeader(const uint8_t* data, size_t data_len,
     return OGG_OK;
 }
 
-OggDemuxResult OggDemuxer::validatePageCRC() const {
+OggDemuxResult OggDemuxer::validate_page_crc() const {
     if (incremental_crc_ != current_page_.checksum) {
         return OGG_CRC_FAILED;
     }
     return OGG_OK;
 }
 
-bool OggDemuxer::ensureBuffersAllocated(OggDemuxState& state) {
+bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
     // Lazy allocation: allocate buffers on first use
     if (!page_header_staging_) {
         void* ptr = config_.alloc ? config_.alloc(OGG_MAX_HEADER_SIZE)
@@ -346,8 +346,8 @@ bool OggDemuxer::ensureBuffersAllocated(OggDemuxState& state) {
     return true;
 }
 
-void OggDemuxer::handleSkippingPacket(const uint8_t* input, size_t input_len,
-                                      OggDemuxState& state) {
+void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
+                                        OggDemuxState& state) {
     // If bytes_to_skip_ is 0, we're continuing a skip from a previous page
     // Calculate how many bytes to skip on this page
     if (bytes_to_skip_ == 0) {
@@ -379,11 +379,11 @@ void OggDemuxer::handleSkippingPacket(const uint8_t* input, size_t input_len,
 
     // Update CRC (we still need to validate the page)
     if (enable_crc_) {
-        incremental_crc_ = calculateCrc32(input, to_skip, incremental_crc_);
+        incremental_crc_ = calculate_crc32(input, to_skip, incremental_crc_);
     }
 
     // Advance through segments
-    advanceThroughSegments(to_skip);
+    advance_through_segments(to_skip);
 
     // Check if packet skip complete
     if (bytes_to_skip_ == 0) {
@@ -400,7 +400,7 @@ void OggDemuxer::handleSkippingPacket(const uint8_t* input, size_t input_len,
             if (continues_to_next_page) {
                 // Packet continues to next page - we need to keep skipping
                 // Validate CRC for current page
-                if (enable_crc_ && validatePageCRC() != OGG_OK) {
+                if (enable_crc_ && validate_page_crc() != OGG_OK) {
                     state.result = OGG_CRC_FAILED;
                     return;
                 }
@@ -417,7 +417,7 @@ void OggDemuxer::handleSkippingPacket(const uint8_t* input, size_t input_len,
             // Packet complete - exit skip mode
             skipping_packet_ = false;
 
-            if (enable_crc_ && validatePageCRC() != OGG_OK) {
+            if (enable_crc_ && validate_page_crc() != OGG_OK) {
                 state.result = OGG_CRC_FAILED;
                 return;
             }
@@ -444,8 +444,8 @@ void OggDemuxer::handleSkippingPacket(const uint8_t* input, size_t input_len,
 
     // Check if page body fully consumed
     if (page_body_bytes_consumed_ >=
-        calculateBodySize(segment_table_, current_page_.segment_count)) {
-        if (enable_crc_ && validatePageCRC() != OGG_OK) {
+        calculate_body_size(segment_table_, current_page_.segment_count)) {
+        if (enable_crc_ && validate_page_crc() != OGG_OK) {
             state.result = OGG_CRC_FAILED;
             return;
         }
@@ -469,7 +469,7 @@ void OggDemuxer::handleSkippingPacket(const uint8_t* input, size_t input_len,
     state.result = OGG_NEED_MORE_DATA;
 }
 
-void OggDemuxer::returnAssembledPacket(size_t bytes_consumed, OggDemuxState& state) {
+void OggDemuxer::return_assembled_packet(size_t bytes_consumed, OggDemuxState& state) {
     state.packet.data = internal_buffer_;
     state.packet.length = packet_assembly_size_;
 #ifdef MICRO_OGG_DEMUXER_DEBUG
@@ -492,7 +492,7 @@ void OggDemuxer::returnAssembledPacket(size_t bytes_consumed, OggDemuxState& sta
 
     // Check if page complete
     if (is_last) {
-        if (enable_crc_ && validatePageCRC() != OGG_OK) {
+        if (enable_crc_ && validate_page_crc() != OGG_OK) {
             state.result = OGG_CRC_FAILED;
             return;
         }
@@ -506,7 +506,7 @@ void OggDemuxer::returnAssembledPacket(size_t bytes_consumed, OggDemuxState& sta
     state.result = OGG_OK;
 }
 
-bool OggDemuxer::isAtPacketBoundary() const {
+bool OggDemuxer::is_at_packet_boundary() const {
     // Check if CURRENT segment ends the packet (with bounds check)
     if (current_segment_index_ < current_page_.segment_count &&
         segment_table_[current_segment_index_] < OGG_MAX_LACING_VALUE &&
@@ -523,8 +523,8 @@ bool OggDemuxer::isAtPacketBoundary() const {
     return false;
 }
 
-bool OggDemuxer::finalizePage(OggDemuxState& state) {
-    if (enable_crc_ && validatePageCRC() != OGG_OK) {
+bool OggDemuxer::finalize_page(OggDemuxState& state) {
+    if (enable_crc_ && validate_page_crc() != OGG_OK) {
         state.result = OGG_CRC_FAILED;
         return false;
     }
@@ -537,8 +537,9 @@ bool OggDemuxer::finalizePage(OggDemuxState& state) {
     return true;
 }
 
-OggDemuxer::InternalResult OggDemuxer::accumulateHeader(const uint8_t* input, size_t input_len,
-                                                        size_t& bytes_added, OggDemuxState& state) {
+OggDemuxer::InternalResult OggDemuxer::accumulate_header(const uint8_t* input, size_t input_len,
+                                                         size_t& bytes_added,
+                                                         OggDemuxState& state) {
     size_t staged_bytes = page_header_staging_size_;
     bytes_added = 0;
 
@@ -587,7 +588,7 @@ OggDemuxer::InternalResult OggDemuxer::accumulateHeader(const uint8_t* input, si
     return InternalResult::OK;
 }
 
-bool OggDemuxer::validateStreamConsistency(OggDemuxState& state) {
+bool OggDemuxer::validate_stream_consistency(OggDemuxState& state) {
     // RFC 3533 validation - page sequence
     if (!stream_initialized_) {
         if (!(current_page_.header_type & OGG_BEGINNING_OF_STREAM)) {
@@ -624,10 +625,10 @@ bool OggDemuxer::validateStreamConsistency(OggDemuxState& state) {
     return true;
 }
 
-void OggDemuxer::handleAssemblingPacket(const uint8_t* input, size_t input_len,
-                                        OggDemuxState& state) {
-    size_t remaining_page_body =
-        calculateBodySize(segment_table_, current_page_.segment_count) - page_body_bytes_consumed_;
+void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len,
+                                          OggDemuxState& state) {
+    size_t remaining_page_body = calculate_body_size(segment_table_, current_page_.segment_count) -
+                                 page_body_bytes_consumed_;
 
     // Calculate bytes to packet end, accounting for partially consumed current segment
     size_t bytes_to_packet_end = 0;
@@ -665,8 +666,8 @@ void OggDemuxer::handleAssemblingPacket(const uint8_t* input, size_t input_len,
 
         // Check if page body is fully consumed
         if (page_body_bytes_consumed_ >=
-            calculateBodySize(segment_table_, current_page_.segment_count)) {
-            if (!finalizePage(state)) {
+            calculate_body_size(segment_table_, current_page_.segment_count)) {
+            if (!finalize_page(state)) {
                 return;
             }
             state.result = OGG_NEED_MORE_DATA;
@@ -674,13 +675,13 @@ void OggDemuxer::handleAssemblingPacket(const uint8_t* input, size_t input_len,
         }
 
         // Check for zero-length segment completing packet
-        if (isAtPacketBoundary()) {
+        if (is_at_packet_boundary()) {
             // Advance past zero-length segment
             if (segment_table_[current_segment_index_] == current_segment_bytes_consumed_) {
                 current_segment_index_++;
                 current_segment_bytes_consumed_ = 0;
             }
-            returnAssembledPacket(0, state);
+            return_assembled_packet(0, state);
             return;
         }
 
@@ -689,14 +690,14 @@ void OggDemuxer::handleAssemblingPacket(const uint8_t* input, size_t input_len,
     }
 
     // Ensure buffer can hold new data
-    GrowBufferResult grow_result = growBuffer(packet_assembly_size_ + to_consume);
+    GrowBufferResult grow_result = grow_buffer(packet_assembly_size_ + to_consume);
     if (grow_result != GROW_OK) {
         if (grow_result == GROW_EXCEEDS_MAX) {
             bytes_to_skip_ = bytes_to_packet_end;
             skipping_packet_ = true;
             assembling_packet_ = false;
             packet_assembly_size_ = 0;
-            handleSkippingPacket(input, input_len, state);
+            handle_skipping_packet(input, input_len, state);
             return;
         }
         state.result = OGG_ALLOCATION_FAILED;
@@ -710,27 +711,27 @@ void OggDemuxer::handleAssemblingPacket(const uint8_t* input, size_t input_len,
     state.bytes_consumed = to_consume;
 
     if (enable_crc_) {
-        incremental_crc_ = calculateCrc32(input, to_consume, incremental_crc_);
+        incremental_crc_ = calculate_crc32(input, to_consume, incremental_crc_);
     }
 
-    advanceThroughSegments(to_consume);
+    advance_through_segments(to_consume);
 
     // Check if packet complete
-    if (isAtPacketBoundary()) {
+    if (is_at_packet_boundary()) {
         // Advance past any zero-length terminator segment
         if (current_segment_index_ < current_page_.segment_count &&
             segment_table_[current_segment_index_] == 0) {
             current_segment_index_++;
             current_segment_bytes_consumed_ = 0;
         }
-        returnAssembledPacket(to_consume, state);
+        return_assembled_packet(to_consume, state);
         return;
     }
 
     // Check if page body fully consumed
     if (page_body_bytes_consumed_ >=
-        calculateBodySize(segment_table_, current_page_.segment_count)) {
-        if (!finalizePage(state)) {
+        calculate_body_size(segment_table_, current_page_.segment_count)) {
+        if (!finalize_page(state)) {
             return;
         }
     }
@@ -738,8 +739,8 @@ void OggDemuxer::handleAssemblingPacket(const uint8_t* input, size_t input_len,
     state.result = OGG_NEED_MORE_DATA;
 }
 
-OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, size_t input_len,
-                                                        OggDemuxState& state) {
+OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, size_t input_len,
+                                                          OggDemuxState& state) {
     const uint8_t* header_data = nullptr;
     size_t header_data_len = 0;
     size_t staged_bytes = page_header_staging_size_;
@@ -748,7 +749,7 @@ OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, si
     // Combine staged data (if any) with new input
     if (staged_bytes > 0) {
         InternalResult acc_result =
-            accumulateHeader(input, input_len, bytes_added_to_staging, state);
+            accumulate_header(input, input_len, bytes_added_to_staging, state);
         if (acc_result != InternalResult::OK) {
             return acc_result;
         }
@@ -762,7 +763,7 @@ OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, si
     // Try to parse header
     size_t header_size = 0;
     OggDemuxResult result =
-        parsePageHeader(header_data, header_data_len, current_page_, header_size);
+        parse_page_header(header_data, header_data_len, current_page_, header_size);
 
     if (result == OGG_NEED_MORE_DATA) {
         if (page_header_staging_size_ == 0 && input_len > 0) {
@@ -788,7 +789,7 @@ OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, si
     }
 
     // Validate page body size
-    size_t total_page_body_size = calculateBodySize(segment_table_, current_page_.segment_count);
+    size_t total_page_body_size = calculate_body_size(segment_table_, current_page_.segment_count);
     if (total_page_body_size > OGG_MAX_PAGE_BODY_SIZE) {
         state.result = OGG_STREAM_SEQUENCE_ERROR;
         return InternalResult::PACKET_READY;
@@ -797,7 +798,7 @@ OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, si
     granule_position_ = current_page_.granule_position;
 
     // Validate stream consistency (BOS, serial, sequence, EOS)
-    if (!validateStreamConsistency(state)) {
+    if (!validate_stream_consistency(state)) {
         return InternalResult::PACKET_READY;
     }
 
@@ -811,10 +812,10 @@ OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, si
             uint8_t saved_crc[4];
             std::memcpy(saved_crc, page_header_staging_ + OGG_CHECKSUM_OFFSET, 4);
             std::memset(page_header_staging_ + OGG_CHECKSUM_OFFSET, 0, 4);
-            incremental_crc_ = calculateCrc32(page_header_staging_, header_size, 0);
+            incremental_crc_ = calculate_crc32(page_header_staging_, header_size, 0);
             std::memcpy(page_header_staging_ + OGG_CHECKSUM_OFFSET, saved_crc, 4);
 
-            if (validatePageCRC() != OGG_OK) {
+            if (validate_page_crc() != OGG_OK) {
                 state.result = OGG_CRC_FAILED;
                 return InternalResult::PACKET_READY;
             }
@@ -836,7 +837,7 @@ OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, si
         uint8_t saved_crc[4];
         std::memcpy(saved_crc, page_header_staging_ + OGG_CHECKSUM_OFFSET, 4);
         std::memset(page_header_staging_ + OGG_CHECKSUM_OFFSET, 0, 4);
-        incremental_crc_ = calculateCrc32(page_header_staging_, header_size, 0);
+        incremental_crc_ = calculate_crc32(page_header_staging_, header_size, 0);
         std::memcpy(page_header_staging_ + OGG_CHECKSUM_OFFSET, saved_crc, 4);
     }
 
@@ -856,10 +857,10 @@ OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, si
         (bytes_from_input_for_header < input_len) ? (input_len - bytes_from_input_for_header) : 0;
 
     if (remaining_in_input > 0) {
-        PacketInfo first_packet = scanForNextPacket(0);
+        PacketInfo first_packet = scan_for_next_packet(0);
         if (first_packet.complete && remaining_in_input >= first_packet.size) {
             const uint8_t* body_start = input + bytes_from_input_for_header;
-            handleZeroCopyReturn(body_start, first_packet, bytes_from_input_for_header, state);
+            handle_zero_copy_return(body_start, first_packet, bytes_from_input_for_header, state);
             page_header_staging_size_ = 0;
             return InternalResult::PACKET_READY;
         }
@@ -872,18 +873,18 @@ OggDemuxer::InternalResult OggDemuxer::handlePageHeader(const uint8_t* input, si
     return InternalResult::OK;
 }
 
-OggDemuxer::InternalResult OggDemuxer::handleZeroCopyPath(const uint8_t* input, size_t input_len,
-                                                          OggDemuxState& state) {
-    size_t remaining_page_body =
-        calculateBodySize(segment_table_, current_page_.segment_count) - page_body_bytes_consumed_;
+OggDemuxer::InternalResult OggDemuxer::handle_zero_copy_path(const uint8_t* input, size_t input_len,
+                                                             OggDemuxState& state) {
+    size_t remaining_page_body = calculate_body_size(segment_table_, current_page_.segment_count) -
+                                 page_body_bytes_consumed_;
 
     // Scan segment table to find next packet size
-    PacketInfo next_packet = scanForNextPacket(current_segment_index_);
+    PacketInfo next_packet = scan_for_next_packet(current_segment_index_);
 
     // Check if we have enough data and packet is complete
     if (input_len >= next_packet.size && next_packet.complete) {
         // Zero-copy return!
-        handleZeroCopyReturn(input, next_packet, 0, state);
+        handle_zero_copy_return(input, next_packet, 0, state);
         return InternalResult::PACKET_READY;
     }
 
@@ -892,7 +893,7 @@ OggDemuxer::InternalResult OggDemuxer::handleZeroCopyPath(const uint8_t* input, 
 
     if (to_buffer > 0) {
         // Ensure buffer can hold data
-        GrowBufferResult grow_result = growBuffer(to_buffer);
+        GrowBufferResult grow_result = grow_buffer(to_buffer);
         if (grow_result != GROW_OK) {
             if (grow_result == GROW_EXCEEDS_MAX) {
                 // Packet too large to buffer - enter skip mode
@@ -903,7 +904,7 @@ OggDemuxer::InternalResult OggDemuxer::handleZeroCopyPath(const uint8_t* input, 
                 packet_assembly_size_ = 0;   // Clear any assembly state
 
                 // Handle skipping in skip mode
-                handleSkippingPacket(input, input_len, state);
+                handle_skipping_packet(input, input_len, state);
                 return InternalResult::PACKET_READY;  // state has the result
             }
             state.result = OGG_ALLOCATION_FAILED;
@@ -919,17 +920,17 @@ OggDemuxer::InternalResult OggDemuxer::handleZeroCopyPath(const uint8_t* input, 
 
         // Update CRC
         if (enable_crc_) {
-            incremental_crc_ = calculateCrc32(input, to_buffer, incremental_crc_);
+            incremental_crc_ = calculate_crc32(input, to_buffer, incremental_crc_);
         }
 
         // Advance through segments
-        advanceThroughSegments(to_buffer);
+        advance_through_segments(to_buffer);
 
         // Check if page body fully consumed
         if (page_body_bytes_consumed_ >=
-            calculateBodySize(segment_table_, current_page_.segment_count)) {
+            calculate_body_size(segment_table_, current_page_.segment_count)) {
             // Validate CRC
-            if (enable_crc_ && validatePageCRC() != OGG_OK) {
+            if (enable_crc_ && validate_page_crc() != OGG_OK) {
                 state.result = OGG_CRC_FAILED;
                 return InternalResult::PACKET_READY;
             }
@@ -950,7 +951,7 @@ OggDemuxer::InternalResult OggDemuxer::handleZeroCopyPath(const uint8_t* input, 
 // PRIVATE HELPERS: Segment and Packet Navigation
 // ==============================================================================
 
-size_t OggDemuxer::calculateBodySize(const uint8_t* segment_table, uint8_t segment_count) {
+size_t OggDemuxer::calculate_body_size(const uint8_t* segment_table, uint8_t segment_count) {
     size_t total = 0;
     for (uint8_t i = 0; i < segment_count; i++) {
         total += segment_table[i];
@@ -958,7 +959,7 @@ size_t OggDemuxer::calculateBodySize(const uint8_t* segment_table, uint8_t segme
     return total;
 }
 
-void OggDemuxer::advanceThroughSegments(size_t bytes_to_advance) {
+void OggDemuxer::advance_through_segments(size_t bytes_to_advance) {
     while (bytes_to_advance > 0 && current_segment_index_ < current_page_.segment_count) {
         size_t remaining_in_segment =
             segment_table_[current_segment_index_] - current_segment_bytes_consumed_;
@@ -974,7 +975,7 @@ void OggDemuxer::advanceThroughSegments(size_t bytes_to_advance) {
     }
 }
 
-OggDemuxer::PacketInfo OggDemuxer::scanForNextPacket(uint8_t start_segment_index) const {
+OggDemuxer::PacketInfo OggDemuxer::scan_for_next_packet(uint8_t start_segment_index) const {
     PacketInfo info = {0, false, 0};
 
     for (uint8_t i = start_segment_index; i < current_page_.segment_count; i++) {
@@ -993,8 +994,8 @@ OggDemuxer::PacketInfo OggDemuxer::scanForNextPacket(uint8_t start_segment_index
 // PRIVATE HELPERS: Zero-Copy Optimization and Buffer Management
 // ==============================================================================
 
-void OggDemuxer::handleZeroCopyReturn(const uint8_t* packet_ptr, const PacketInfo& packet_info,
-                                      size_t additional_bytes_consumed, OggDemuxState& state) {
+void OggDemuxer::handle_zero_copy_return(const uint8_t* packet_ptr, const PacketInfo& packet_info,
+                                         size_t additional_bytes_consumed, OggDemuxState& state) {
     // Set packet output parameters
     state.packet.data = packet_ptr;
     state.packet.length = packet_info.size;
@@ -1011,7 +1012,8 @@ void OggDemuxer::handleZeroCopyReturn(const uint8_t* packet_ptr, const PacketInf
 
     // Update CRC
     if (enable_crc_) {
-        incremental_crc_ = calculateCrc32(state.packet.data, state.packet.length, incremental_crc_);
+        incremental_crc_ =
+            calculate_crc32(state.packet.data, state.packet.length, incremental_crc_);
     }
 
     // Set flags
@@ -1024,7 +1026,7 @@ void OggDemuxer::handleZeroCopyReturn(const uint8_t* packet_ptr, const PacketInf
 
     // Check if page complete
     if (is_last) {
-        if (enable_crc_ && validatePageCRC() != OGG_OK) {
+        if (enable_crc_ && validate_page_crc() != OGG_OK) {
             state.result = OGG_CRC_FAILED;
             return;
         }
@@ -1040,7 +1042,7 @@ void OggDemuxer::handleZeroCopyReturn(const uint8_t* packet_ptr, const PacketInf
     state.result = OGG_OK;
 }
 
-OggDemuxer::GrowBufferResult OggDemuxer::growBuffer(size_t needed_size) {
+OggDemuxer::GrowBufferResult OggDemuxer::grow_buffer(size_t needed_size) {
     // Check if we need to grow
     if (needed_size <= internal_buffer_capacity_) {
         return GROW_OK;  // Already large enough
