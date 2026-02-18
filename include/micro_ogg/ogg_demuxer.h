@@ -230,11 +230,18 @@ public:
      * @brief Report how many body bytes were consumed by the decoder (streaming mode)
      *
      * Updates internal segment tracking. When the full page body is consumed,
-     * transitions back to header parsing state.
+     * validates CRC (if enabled and data pointer provided) and transitions back
+     * to header parsing state.
      *
      * @param body_bytes_consumed Number of body bytes actually consumed
+     * @param data Pointer to the consumed body bytes for CRC accumulation (optional).
+     *             When CRC is enabled, pass the same pointer returned in the previous
+     *             get_next_data() call's packet.data to accumulate CRC over body bytes.
+     *             If nullptr, CRC accumulation is skipped for these bytes.
+     * @return OGG_NEED_MORE_DATA on success (more data needed), or OGG_CRC_FAILED
+     *         if CRC validation fails when the page is fully consumed
      */
-    void report_consumed(size_t body_bytes_consumed);
+    OggDemuxResult report_consumed(size_t body_bytes_consumed, const uint8_t* data = nullptr);
 
     /**
      * @brief Reset demuxer state
@@ -371,7 +378,7 @@ private:
     bool is_at_packet_boundary() const;
 
     // Validate CRC and transition to STATE_EXPECT_PAGE_HEADER when page is consumed
-    bool finalize_page(OggDemuxState& state);
+    OggDemuxResult finalize_page();
 
     // Accumulate partial header bytes into page_header_staging_
     InternalResult accumulate_header(const uint8_t* input, size_t input_len, size_t& bytes_added,

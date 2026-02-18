@@ -317,20 +317,12 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
 
         // Handle zero-body pages: transition back to header parsing
         if (remaining_body == 0) {
-            previous_page_ended_with_continued_packet_ =
-                (current_page_.segment_count > 0 &&
-                 segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
-            state_ = STATE_EXPECT_PAGE_HEADER;
-            state.result = OGG_NEED_MORE_DATA;
+            OggDemuxResult page_result = finalize_page();
+            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
             return state;
         }
 
         size_t to_offer = std::min(remaining_len, remaining_body);
-
-        if (to_offer == 0) {
-            state.result = OGG_NEED_MORE_DATA;
-            return state;
-        }
 
         state.packet.data = remaining_input;
         state.packet.length = to_offer;
@@ -350,20 +342,12 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
 
         // Handle fully consumed page: transition back to header parsing
         if (remaining_body == 0) {
-            previous_page_ended_with_continued_packet_ =
-                (current_page_.segment_count > 0 &&
-                 segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
-            state_ = STATE_EXPECT_PAGE_HEADER;
-            state.result = OGG_NEED_MORE_DATA;
+            OggDemuxResult page_result = finalize_page();
+            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
             return state;
         }
 
         size_t to_offer = std::min(input_len, remaining_body);
-
-        if (to_offer == 0) {
-            state.result = OGG_NEED_MORE_DATA;
-            return state;
-        }
 
         state.packet.data = input;
         state.packet.length = to_offer;
@@ -380,9 +364,9 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
     return state;
 }
 
-void OggDemuxer::report_consumed(size_t body_bytes_consumed) {
+OggDemuxResult OggDemuxer::report_consumed(size_t body_bytes_consumed, const uint8_t* data) {
     if (state_ != STATE_PROCESSING_SEGMENTS || body_bytes_consumed == 0) {
-        return;
+        return OGG_NEED_MORE_DATA;
     }
 
     // Clamp to remaining body bytes to prevent state corruption
@@ -392,6 +376,11 @@ void OggDemuxer::report_consumed(size_t body_bytes_consumed) {
         body_bytes_consumed = remaining_body;
     }
 
+    // Accumulate CRC over consumed body bytes
+    if (enable_crc_ && data) {
+        incremental_crc_ = calculate_crc32(data, body_bytes_consumed, incremental_crc_);
+    }
+
     page_body_bytes_consumed_ += body_bytes_consumed;
     advance_through_segments(body_bytes_consumed);
 
@@ -399,11 +388,9 @@ void OggDemuxer::report_consumed(size_t body_bytes_consumed) {
     current_packet_is_bos_ = false;
 
     if (page_body_bytes_consumed_ >= total_body) {
-        previous_page_ended_with_continued_packet_ =
-            (current_page_.segment_count > 0 &&
-             segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
-        state_ = STATE_EXPECT_PAGE_HEADER;
+        return finalize_page();
     }
+    return OGG_NEED_MORE_DATA;
 }
 
 // ==============================================================================
@@ -673,10 +660,9 @@ bool OggDemuxer::is_at_packet_boundary() const {
     return false;
 }
 
-bool OggDemuxer::finalize_page(OggDemuxState& state) {
+OggDemuxResult OggDemuxer::finalize_page() {
     if (enable_crc_ && validate_page_crc() != OGG_OK) {
-        state.result = OGG_CRC_FAILED;
-        return false;
+        return OGG_CRC_FAILED;
     }
 
     // Check if last segment = 255 (packet continues to next page)
@@ -684,7 +670,7 @@ bool OggDemuxer::finalize_page(OggDemuxState& state) {
         (segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
 
     state_ = STATE_EXPECT_PAGE_HEADER;
-    return true;
+    return OGG_OK;
 }
 
 OggDemuxer::InternalResult OggDemuxer::accumulate_header(const uint8_t* input, size_t input_len,
@@ -817,7 +803,9 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
         // Check if page body is fully consumed
         if (page_body_bytes_consumed_ >=
             calculate_body_size(segment_table_, current_page_.segment_count)) {
-            if (!finalize_page(state)) {
+            OggDemuxResult page_result = finalize_page();
+            if (page_result != OGG_OK) {
+                state.result = page_result;
                 return;
             }
             state.result = OGG_NEED_MORE_DATA;
@@ -881,7 +869,9 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
     // Check if page body fully consumed
     if (page_body_bytes_consumed_ >=
         calculate_body_size(segment_table_, current_page_.segment_count)) {
-        if (!finalize_page(state)) {
+        OggDemuxResult page_result = finalize_page();
+        if (page_result != OGG_OK) {
+            state.result = page_result;
             return;
         }
     }
