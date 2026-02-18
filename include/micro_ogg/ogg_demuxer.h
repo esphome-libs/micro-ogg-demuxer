@@ -201,6 +201,42 @@ public:
     OggDemuxState get_next_packet(const uint8_t* input, size_t input_len);
 
     /**
+     * @brief Get next raw body data from the Ogg stream (streaming mode)
+     *
+     * Strips Ogg framing and offers raw body bytes as a zero-copy pointer.
+     * No internal buffering is performed — only the header staging buffer is allocated.
+     * The caller must call report_consumed() to indicate how many body bytes were used.
+     *
+     * @param input Input data pointer
+     * @param input_len Available input data length
+     * @return OggDemuxState with result, bytes_consumed (header bytes only), and packet data
+     *
+     * Usage:
+     * @code
+     * OggDemuxState state = demuxer.get_next_data(input, len);
+     * input += state.bytes_consumed;
+     * len -= state.bytes_consumed;
+     * if (state.result == OGG_OK) {
+     *     size_t used = decoder.decode(state.packet.data, state.packet.length);
+     *     demuxer.report_consumed(used);
+     *     input += used;
+     *     len -= used;
+     * }
+     * @endcode
+     */
+    OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
+
+    /**
+     * @brief Report how many body bytes were consumed by the decoder (streaming mode)
+     *
+     * Updates internal segment tracking. When the full page body is consumed,
+     * transitions back to header parsing state.
+     *
+     * @param body_bytes_consumed Number of body bytes actually consumed
+     */
+    void report_consumed(size_t body_bytes_consumed);
+
+    /**
      * @brief Reset demuxer state
      */
     void reset();
@@ -307,11 +343,16 @@ private:
     // Compare incremental CRC against stored page checksum
     OggDemuxResult validate_page_crc() const;
 
+    // Lazily allocate page_header_staging_ only (for streaming mode)
+    bool ensure_header_staging_allocated(OggDemuxState& state);
+
     // Lazily allocate page_header_staging_ and internal_buffer_ on first use
     bool ensure_buffers_allocated(OggDemuxState& state);
 
     // Handle STATE_EXPECT_PAGE_HEADER and STATE_ACCUMULATING_PAGE_HEADER
-    InternalResult handle_page_header(const uint8_t* input, size_t input_len, OggDemuxState& state);
+    // When attempt_packet_zero_copy is false, skips the zero-copy packet optimization
+    InternalResult handle_page_header(const uint8_t* input, size_t input_len, OggDemuxState& state,
+                                      bool attempt_packet_zero_copy = true);
 
     // Skip packets that exceed max_buffer_size without buffering
     void handle_skipping_packet(const uint8_t* input, size_t input_len, OggDemuxState& state);

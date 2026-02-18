@@ -264,6 +264,149 @@ OggDemuxState OggDemuxer::get_next_packet(const uint8_t* input, size_t input_len
 }
 
 // ==============================================================================
+// PUBLIC API: Streaming Mode
+// ==============================================================================
+
+OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) {
+    OggDemuxState state{};
+
+    if (input_len > 0 && !input) {
+        state.result = OGG_INVALID_CAPTURE;
+        state.bytes_consumed = 0;
+        state.packet.length = 0;
+        state.packet.is_bos = false;
+        state.packet.is_eos = false;
+        state.packet.is_last_on_page = false;
+        state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+        return state;
+    }
+
+    // Only allocate header staging - no internal buffer needed for streaming
+    if (!ensure_header_staging_allocated(state)) {
+        return state;
+    }
+
+    state.bytes_consumed = 0;
+    state.packet.length = 0;
+    state.packet.data = nullptr;
+    state.packet.is_bos = false;
+    state.packet.is_eos = false;
+    state.packet.is_last_on_page = false;
+    state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+
+    // Header states: parse header without zero-copy packet optimization
+    if (state_ == STATE_EXPECT_PAGE_HEADER || state_ == STATE_ACCUMULATING_PAGE_HEADER) {
+        InternalResult result = handle_page_header(input, input_len, state, false);
+        if (result != InternalResult::OK) {
+            return state;
+        }
+        // Header parsed, now in STATE_PROCESSING_SEGMENTS
+        // Check if input has remaining bytes to offer as body data
+        size_t header_bytes = state.bytes_consumed;
+        const uint8_t* remaining_input = input + header_bytes;
+        size_t remaining_len = (header_bytes < input_len) ? (input_len - header_bytes) : 0;
+
+        if (remaining_len == 0) {
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
+
+        // Fall through to body offering
+        size_t total_body = calculate_body_size(segment_table_, current_page_.segment_count);
+        size_t remaining_body = total_body - page_body_bytes_consumed_;
+
+        // Handle zero-body pages: transition back to header parsing
+        if (remaining_body == 0) {
+            previous_page_ended_with_continued_packet_ =
+                (current_page_.segment_count > 0 &&
+                 segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
+            state_ = STATE_EXPECT_PAGE_HEADER;
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
+
+        size_t to_offer = std::min(remaining_len, remaining_body);
+
+        if (to_offer == 0) {
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
+
+        state.packet.data = remaining_input;
+        state.packet.length = to_offer;
+        state.packet.granule_position = granule_position_;
+        state.packet.is_bos = current_packet_is_bos_;
+        state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
+        state.packet.is_last_on_page = (page_body_bytes_consumed_ + to_offer >= total_body);
+        // bytes_consumed only includes header bytes, not body bytes
+        state.result = OGG_OK;
+        return state;
+    }
+
+    // STATE_PROCESSING_SEGMENTS: offer body bytes as zero-copy pointer
+    if (state_ == STATE_PROCESSING_SEGMENTS) {
+        size_t total_body = calculate_body_size(segment_table_, current_page_.segment_count);
+        size_t remaining_body = total_body - page_body_bytes_consumed_;
+
+        // Handle fully consumed page: transition back to header parsing
+        if (remaining_body == 0) {
+            previous_page_ended_with_continued_packet_ =
+                (current_page_.segment_count > 0 &&
+                 segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
+            state_ = STATE_EXPECT_PAGE_HEADER;
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
+
+        size_t to_offer = std::min(input_len, remaining_body);
+
+        if (to_offer == 0) {
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
+
+        state.packet.data = input;
+        state.packet.length = to_offer;
+        state.packet.granule_position = granule_position_;
+        state.packet.is_bos = current_packet_is_bos_;
+        state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
+        state.packet.is_last_on_page = (page_body_bytes_consumed_ + to_offer >= total_body);
+        state.bytes_consumed = 0;
+        state.result = OGG_OK;
+        return state;
+    }
+
+    state.result = OGG_NEED_MORE_DATA;
+    return state;
+}
+
+void OggDemuxer::report_consumed(size_t body_bytes_consumed) {
+    if (state_ != STATE_PROCESSING_SEGMENTS || body_bytes_consumed == 0) {
+        return;
+    }
+
+    // Clamp to remaining body bytes to prevent state corruption
+    size_t total_body = calculate_body_size(segment_table_, current_page_.segment_count);
+    size_t remaining_body = total_body - page_body_bytes_consumed_;
+    if (body_bytes_consumed > remaining_body) {
+        body_bytes_consumed = remaining_body;
+    }
+
+    page_body_bytes_consumed_ += body_bytes_consumed;
+    advance_through_segments(body_bytes_consumed);
+
+    // Clear BOS after first data return
+    current_packet_is_bos_ = false;
+
+    if (page_body_bytes_consumed_ >= total_body) {
+        previous_page_ended_with_continued_packet_ =
+            (current_page_.segment_count > 0 &&
+             segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
+        state_ = STATE_EXPECT_PAGE_HEADER;
+    }
+}
+
+// ==============================================================================
 // PRIVATE HELPERS: Page Header Parsing
 // ==============================================================================
 
@@ -312,8 +455,7 @@ OggDemuxResult OggDemuxer::validate_page_crc() const {
     return OGG_OK;
 }
 
-bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
-    // Lazy allocation: allocate buffers on first use
+bool OggDemuxer::ensure_header_staging_allocated(OggDemuxState& state) {
     if (!page_header_staging_) {
         void* ptr = config_.alloc ? config_.alloc(OGG_MAX_HEADER_SIZE)
                                   : std::calloc(1, OGG_MAX_HEADER_SIZE);
@@ -325,6 +467,14 @@ bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
         page_header_staging_ = (uint8_t*)ptr;
         // segment_table_ points into page_header_staging_ (no separate allocation)
         segment_table_ = page_header_staging_ + OGG_PAGE_HEADER_SIZE;
+    }
+
+    return true;
+}
+
+bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
+    if (!ensure_header_staging_allocated(state)) {
+        return false;
     }
 
     if (!internal_buffer_) {
@@ -740,7 +890,8 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
 }
 
 OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, size_t input_len,
-                                                          OggDemuxState& state) {
+                                                          OggDemuxState& state,
+                                                          bool attempt_packet_zero_copy) {
     const uint8_t* header_data = nullptr;
     size_t header_data_len = 0;
     size_t staged_bytes = page_header_staging_size_;
@@ -851,12 +1002,12 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
         bos_flag_used_ = true;
     }
 
-    // Check for zero-copy opportunity (only when not assembling a continued packet)
+    // Check for zero-copy opportunity (only in packet mode, not when assembling a continued packet)
     size_t bytes_from_input_for_header = (staged_bytes == 0) ? header_size : bytes_added_to_staging;
     size_t remaining_in_input =
         (bytes_from_input_for_header < input_len) ? (input_len - bytes_from_input_for_header) : 0;
 
-    if (remaining_in_input > 0 && !assembling_packet_) {
+    if (attempt_packet_zero_copy && remaining_in_input > 0 && !assembling_packet_) {
         PacketInfo first_packet = scan_for_next_packet(0);
         if (first_packet.complete && remaining_in_input >= first_packet.size) {
             const uint8_t* body_start = input + bytes_from_input_for_header;
