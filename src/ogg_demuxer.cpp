@@ -851,12 +851,12 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
         bos_flag_used_ = true;
     }
 
-    // Check for zero-copy opportunity
+    // Check for zero-copy opportunity (only when not assembling a continued packet)
     size_t bytes_from_input_for_header = (staged_bytes == 0) ? header_size : bytes_added_to_staging;
     size_t remaining_in_input =
         (bytes_from_input_for_header < input_len) ? (input_len - bytes_from_input_for_header) : 0;
 
-    if (remaining_in_input > 0) {
+    if (remaining_in_input > 0 && !assembling_packet_) {
         PacketInfo first_packet = scan_for_next_packet(0);
         if (first_packet.complete && remaining_in_input >= first_packet.size) {
             const uint8_t* body_start = input + bytes_from_input_for_header;
