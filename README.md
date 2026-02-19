@@ -8,6 +8,7 @@ A lightweight, platform-agnostic Ogg container demuxer for embedded systems and 
 
 - **Zero-copy optimization**: Returns pointers directly to input buffer when possible
 - **Streaming demux**: Feed data in chunks, demuxer handles internal buffering
+- **Raw streaming mode**: `get_next_data()` skips packet assembly entirely for byte-level streaming to decoders
 - **Dynamic buffer growth**: Starts small (1KB), grows as needed (configurable max)
 - **Custom allocators**: Bring your own malloc/free/realloc or use defaults
 - **Platform-agnostic**: No dependencies on ESP-IDF, libogg, or any platform-specific code
@@ -167,6 +168,38 @@ Demux input and return next complete packet. Returns struct containing:
 - `bytes_consumed`: How many input bytes were consumed
 - `packet`: Packet data (only valid if result == OGG_OK)
 
+#### `get_next_data()` / `report_consumed()` (Streaming Mode)
+
+```cpp
+OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
+OggDemuxResult report_consumed(size_t body_bytes_consumed, const uint8_t* data = nullptr);
+```
+
+Streaming mode that skips full packet assembly and internal buffering entirely. `get_next_data()` strips Ogg framing and returns raw body bytes as a zero-copy pointer. The caller then feeds data directly to a decoder and reports how many bytes were consumed via `report_consumed()`.
+
+Only the header staging buffer (282 bytes) is allocated — no internal packet buffer is needed.
+
+- `get_next_data()` returns the same `OggDemuxState` struct. `bytes_consumed` reflects header bytes only; body bytes are tracked separately via `report_consumed()`.
+- `report_consumed()` updates internal segment tracking. When the full page body is consumed, it validates CRC (if enabled) and transitions back to header parsing. Pass the data pointer for CRC accumulation, or `nullptr` to skip it.
+
+```cpp
+micro_ogg::OggDemuxer demuxer;
+
+while (have_data) {
+    micro_ogg::OggDemuxState state = demuxer.get_next_data(input, len);
+    input += state.bytes_consumed;
+    len -= state.bytes_consumed;
+
+    if (state.result == micro_ogg::OGG_OK) {
+        // Feed raw body data directly to a decoder
+        size_t used = decoder.decode(state.packet.data, state.packet.length);
+        demuxer.report_consumed(used);
+        input += used;
+        len -= used;
+    }
+}
+```
+
 #### `reset()`
 
 ```cpp
@@ -177,7 +210,7 @@ Reset demuxer state. Does not deallocate buffers.
 
 ## Memory Usage
 
-The demuxer allocates buffers on first call to `get_next_packet()`:
+The demuxer allocates buffers on first call to `get_next_packet()` (or only the header staging buffer when using `get_next_data()`):
 
 | Buffer                | Size       | Description                           |
 | --------------------- | ---------- | ------------------------------------- |
