@@ -41,7 +41,8 @@ constexpr size_t OGG_CHECKSUM_OFFSET = 22;  // Offset to checksum field
 
 // Little-endian helpers
 static inline uint32_t read_le32(const uint8_t* p) {
-    return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24);
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
 static inline uint64_t read_le64(const uint8_t* p) {
@@ -88,7 +89,8 @@ static const uint32_t crc_lookup[256] = {
 
 static uint32_t calculate_crc32(const uint8_t* buffer, size_t size, uint32_t crc) {
     while (size >= 8) {
-        crc ^= (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
+        crc ^= (static_cast<uint32_t>(buffer[0]) << 24) | (static_cast<uint32_t>(buffer[1]) << 16) |
+               (static_cast<uint32_t>(buffer[2]) << 8) | buffer[3];
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
