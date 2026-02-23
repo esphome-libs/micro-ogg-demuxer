@@ -96,7 +96,8 @@ static uint32_t calculate_crc32(const uint8_t* buffer, size_t size, uint32_t crc
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
 
-        crc ^= (buffer[4] << 24) | (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
+        crc ^= (static_cast<uint32_t>(buffer[4]) << 24) | (static_cast<uint32_t>(buffer[5]) << 16) |
+               (static_cast<uint32_t>(buffer[6]) << 8) | buffer[7];
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
