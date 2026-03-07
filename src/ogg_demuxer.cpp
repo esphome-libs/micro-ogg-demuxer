@@ -171,6 +171,7 @@ void OggDemuxer::reset() {
     current_segment_index_ = 0;
     current_segment_bytes_consumed_ = 0;
     page_body_bytes_consumed_ = 0;
+    page_body_size_ = 0;
     packet_assembly_size_ = 0;
     assembling_packet_ = false;
     skipping_packet_ = false;
@@ -315,7 +316,7 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
         }
 
         // Fall through to body offering
-        size_t total_body = calculate_body_size(segment_table_, current_page_.segment_count);
+        size_t total_body = page_body_size_;
         size_t remaining_body = total_body - page_body_bytes_consumed_;
 
         // Handle zero-body pages: transition back to header parsing
@@ -340,7 +341,7 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
 
     // STATE_PROCESSING_SEGMENTS: offer body bytes as zero-copy pointer
     if (state_ == STATE_PROCESSING_SEGMENTS) {
-        size_t total_body = calculate_body_size(segment_table_, current_page_.segment_count);
+        size_t total_body = page_body_size_;
         size_t remaining_body = total_body - page_body_bytes_consumed_;
 
         // Handle fully consumed page: transition back to header parsing
@@ -373,7 +374,7 @@ OggDemuxResult OggDemuxer::report_consumed(size_t body_bytes_consumed, const uin
     }
 
     // Clamp to remaining body bytes to prevent state corruption
-    size_t total_body = calculate_body_size(segment_table_, current_page_.segment_count);
+    size_t total_body = page_body_size_;
     size_t remaining_body = total_body - page_body_bytes_consumed_;
     if (body_bytes_consumed > remaining_body) {
         body_bytes_consumed = remaining_body;
@@ -583,8 +584,7 @@ void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
     }
 
     // Check if page body fully consumed
-    if (page_body_bytes_consumed_ >=
-        calculate_body_size(segment_table_, current_page_.segment_count)) {
+    if (page_body_bytes_consumed_ >= page_body_size_) {
         if (enable_crc_ && validate_page_crc() != OGG_OK) {
             state.result = OGG_CRC_FAILED;
             return;
@@ -766,8 +766,7 @@ bool OggDemuxer::validate_stream_consistency(OggDemuxState& state) {
 
 void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len,
                                           OggDemuxState& state) {
-    size_t remaining_page_body = calculate_body_size(segment_table_, current_page_.segment_count) -
-                                 page_body_bytes_consumed_;
+    size_t remaining_page_body = page_body_size_ - page_body_bytes_consumed_;
 
     // Calculate bytes to packet end, accounting for partially consumed current segment
     size_t bytes_to_packet_end = 0;
@@ -804,8 +803,7 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
         }
 
         // Check if page body is fully consumed
-        if (page_body_bytes_consumed_ >=
-            calculate_body_size(segment_table_, current_page_.segment_count)) {
+        if (page_body_bytes_consumed_ >= page_body_size_) {
             OggDemuxResult page_result = finalize_page();
             if (page_result != OGG_OK) {
                 state.result = page_result;
@@ -870,8 +868,7 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
     }
 
     // Check if page body fully consumed
-    if (page_body_bytes_consumed_ >=
-        calculate_body_size(segment_table_, current_page_.segment_count)) {
+    if (page_body_bytes_consumed_ >= page_body_size_) {
         OggDemuxResult page_result = finalize_page();
         if (page_result != OGG_OK) {
             state.result = page_result;
@@ -932,8 +929,9 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
                     current_page_.segment_count);
     }
 
-    // Validate page body size
-    size_t total_page_body_size = calculate_body_size(segment_table_, current_page_.segment_count);
+    // Cache and validate page body size
+    page_body_size_ = calculate_body_size(segment_table_, current_page_.segment_count);
+    size_t total_page_body_size = page_body_size_;
     if (total_page_body_size > OGG_MAX_PAGE_BODY_SIZE) {
         state.result = OGG_STREAM_SEQUENCE_ERROR;
         return InternalResult::PACKET_READY;
@@ -1019,8 +1017,7 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
 
 OggDemuxer::InternalResult OggDemuxer::handle_zero_copy_path(const uint8_t* input, size_t input_len,
                                                              OggDemuxState& state) {
-    size_t remaining_page_body = calculate_body_size(segment_table_, current_page_.segment_count) -
-                                 page_body_bytes_consumed_;
+    size_t remaining_page_body = page_body_size_ - page_body_bytes_consumed_;
 
     // Scan segment table to find next packet size
     PacketInfo next_packet = scan_for_next_packet(current_segment_index_);
@@ -1071,8 +1068,7 @@ OggDemuxer::InternalResult OggDemuxer::handle_zero_copy_path(const uint8_t* inpu
         advance_through_segments(to_buffer);
 
         // Check if page body fully consumed
-        if (page_body_bytes_consumed_ >=
-            calculate_body_size(segment_table_, current_page_.segment_count)) {
+        if (page_body_bytes_consumed_ >= page_body_size_) {
             // Validate CRC
             if (enable_crc_ && validate_page_crc() != OGG_OK) {
                 state.result = OGG_CRC_FAILED;

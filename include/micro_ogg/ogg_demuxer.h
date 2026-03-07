@@ -410,6 +410,7 @@ private:
     size_t max_buffer_size_{0};                 // Maximum buffer size limit
     size_t current_segment_bytes_consumed_{0};  // Bytes consumed from current segment
     size_t page_body_bytes_consumed_{0};        // Total bytes consumed from current page body
+    size_t page_body_size_{0};                  // Total page body size (cached from segment table)
     size_t packet_assembly_size_{0};            // Size of packet being assembled
     size_t bytes_to_skip_{0};                   // Remaining bytes to skip in current packet
 
