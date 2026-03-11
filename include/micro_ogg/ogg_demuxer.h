@@ -143,11 +143,12 @@ struct OggDemuxerConfig {
  * - Internal buffering only occurs when packets span page or input buffer boundaries
  *
  * Memory allocation:
- * - Buffers are allocated on first call to get_next_packet()
- * - page_header_staging_ (282 bytes): Header accumulation and segment table storage
- * - internal_buffer_: Packet assembly buffer (starts at min_buffer_size, grows as needed)
- * - All buffers use configurable allocator (malloc/free by default)
- * - Once allocated, buffers persist for the lifetime of the object
+ * - page_header_staging_ (282 bytes): Inline fixed buffer for header accumulation and segment
+ *   table storage
+ * - internal_buffer_: Packet assembly buffer, allocated lazily on first call to
+ *   get_next_packet() (starts at min_buffer_size, grows as needed)
+ * - internal_buffer_ uses configurable allocator (malloc/free by default)
+ * - Once allocated, internal_buffer_ persists for the lifetime of the object
  * - reset() does not deallocate buffers, only resets demuxer state
  */
 class OggDemuxer {
@@ -155,7 +156,7 @@ public:
     /**
      * @brief Construct OggDemuxer with configurable settings
      *
-     * Note: Internal buffer is NOT allocated in constructor.
+     * Note: The internal packet assembly buffer is NOT allocated in constructor.
      * It will be allocated lazily on first call to get_next_packet().
      *
      * The buffer starts at config.min_buffer_size and grows dynamically up to
@@ -208,7 +209,8 @@ public:
      *
      * Strips Ogg framing and offers raw body bytes as a zero-copy pointer,
      * capped at the current packet boundary. No internal buffering is performed.
-     * Only the header staging buffer is allocated. Segment tracking, CRC accumulation,
+     * No heap allocation is performed (only the inline header staging buffer is used).
+     * Segment tracking, CRC accumulation,
      * and page finalization are handled automatically.
      *
      * When is_end_of_packet is true, the offered data reaches a packet boundary,
@@ -269,7 +271,7 @@ public:
         packet_size = packet_assembly_size_;
         body_consumed = page_body_bytes_consumed_;
         seg_index = current_segment_index_;
-        seg_count = segment_table_ ? current_page_.segment_count : 0;
+        seg_count = current_page_.segment_count;
     }
 
     /**
@@ -338,10 +340,7 @@ private:
     // Compare incremental CRC against stored page checksum
     OggDemuxResult validate_page_crc() const;
 
-    // Lazily allocate page_header_staging_ only (for streaming mode)
-    bool ensure_header_staging_allocated(OggDemuxState& state);
-
-    // Lazily allocate page_header_staging_ and internal_buffer_ on first use
+    // Lazily allocate internal_buffer_ on first use
     bool ensure_buffers_allocated(OggDemuxState& state);
 
     // Handle STATE_EXPECT_PAGE_HEADER and STATE_ACCUMULATING_PAGE_HEADER
@@ -382,14 +381,15 @@ private:
         STATE_PROCESSING_SEGMENTS        // Processing segments from page
     };
 
-    // Member ordering optimized for minimal padding (8-byte aligned first, then 4-byte, then
-    // 1-byte)
+    // Member ordering: inline array first (so segment_table_ initializer can reference it),
+    // then pointers, size_t, uint64_t, structs, uint32_t, and finally uint8_t/bool
+
+    // Fixed inline buffer for header accumulation (27-byte header + up to 255-byte segment table)
+    uint8_t page_header_staging_[282]{};
 
     // 8-byte aligned: pointers
-    uint8_t* segment_table_{
-        nullptr};  // Points into page_header_staging_ + 27 (not separately allocated)
-    uint8_t* page_header_staging_{nullptr};  // Header staging buffer (max 282 bytes)
-    uint8_t* internal_buffer_{nullptr};      // Packet assembly buffer
+    uint8_t* segment_table_{page_header_staging_ + 27};  // Points into page_header_staging_ + 27
+    uint8_t* internal_buffer_{nullptr};                  // Packet assembly buffer
 
     // 8-byte aligned: size_t
     size_t page_header_staging_size_{0};

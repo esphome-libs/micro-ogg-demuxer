@@ -145,16 +145,10 @@ OggDemuxer::OggDemuxer(const OggDemuxerConfig& config)
 OggDemuxer::~OggDemuxer() {
     // Use configured free function or standard free
     if (config_.free) {
-        if (page_header_staging_) {
-            config_.free(page_header_staging_);
-        }
         if (internal_buffer_) {
             config_.free(internal_buffer_);
         }
     } else {
-        if (page_header_staging_) {
-            std::free(page_header_staging_);
-        }
         if (internal_buffer_) {
             std::free(internal_buffer_);
         }
@@ -282,11 +276,6 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
         state.packet.is_eos = false;
         state.packet.is_last_on_page = false;
         state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
-        return state;
-    }
-
-    // Only allocate header staging - no internal buffer needed for streaming
-    if (!ensure_header_staging_allocated(state)) {
         return state;
     }
 
@@ -496,28 +485,7 @@ OggDemuxResult OggDemuxer::validate_page_crc() const {
     return OGG_OK;
 }
 
-bool OggDemuxer::ensure_header_staging_allocated(OggDemuxState& state) {
-    if (!page_header_staging_) {
-        void* ptr = config_.alloc ? config_.alloc(OGG_MAX_HEADER_SIZE)
-                                  : std::calloc(1, OGG_MAX_HEADER_SIZE);
-
-        if (!ptr) {
-            state.result = OGG_ALLOCATION_FAILED;
-            return false;
-        }
-        page_header_staging_ = (uint8_t*)ptr;
-        // segment_table_ points into page_header_staging_ (no separate allocation)
-        segment_table_ = page_header_staging_ + OGG_PAGE_HEADER_SIZE;
-    }
-
-    return true;
-}
-
 bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
-    if (!ensure_header_staging_allocated(state)) {
-        return false;
-    }
-
     if (!internal_buffer_) {
         internal_buffer_capacity_ = min_buffer_size_;
         void* ptr = config_.alloc ? config_.alloc(internal_buffer_capacity_)
