@@ -326,7 +326,22 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
             return state;
         }
 
-        size_t to_offer = std::min(remaining_len, remaining_body);
+        // Skip past any zero-length packets at the current position
+        while (current_segment_index_ < current_page_.segment_count &&
+               segment_table_[current_segment_index_] == 0) {
+            current_segment_index_++;
+            current_segment_bytes_consumed_ = 0;
+        }
+
+        // Cap at packet boundary so we don't bleed into the next packet
+        PacketInfo pkt = scan_for_next_packet(current_segment_index_);
+        size_t bytes_remaining_in_packet = pkt.size - current_segment_bytes_consumed_;
+        size_t to_offer = std::min(remaining_len, bytes_remaining_in_packet);
+
+        if (to_offer == 0) {
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
 
         state.packet.data = remaining_input;
         state.packet.length = to_offer;
@@ -334,6 +349,7 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
         state.packet.is_bos = current_packet_is_bos_;
         state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
         state.packet.is_last_on_page = (page_body_bytes_consumed_ + to_offer >= total_body);
+        state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
         // bytes_consumed only includes header bytes, not body bytes
         state.result = OGG_OK;
         return state;
@@ -351,7 +367,30 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
             return state;
         }
 
-        size_t to_offer = std::min(input_len, remaining_body);
+        // Skip past any zero-length packets at the current position
+        while (current_segment_index_ < current_page_.segment_count &&
+               segment_table_[current_segment_index_] == 0) {
+            current_segment_index_++;
+            current_segment_bytes_consumed_ = 0;
+        }
+
+        // Check if skipping zero-length packets consumed the page
+        remaining_body = total_body - page_body_bytes_consumed_;
+        if (remaining_body == 0) {
+            OggDemuxResult page_result = finalize_page();
+            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
+            return state;
+        }
+
+        // Cap at packet boundary so we don't bleed into the next packet
+        PacketInfo pkt = scan_for_next_packet(current_segment_index_);
+        size_t bytes_remaining_in_packet = pkt.size - current_segment_bytes_consumed_;
+        size_t to_offer = std::min(input_len, bytes_remaining_in_packet);
+
+        if (to_offer == 0) {
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
 
         state.packet.data = input;
         state.packet.length = to_offer;
@@ -359,6 +398,7 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
         state.packet.is_bos = current_packet_is_bos_;
         state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
         state.packet.is_last_on_page = (page_body_bytes_consumed_ + to_offer >= total_body);
+        state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
         state.bytes_consumed = 0;
         state.result = OGG_OK;
         return state;
@@ -622,6 +662,7 @@ void OggDemuxer::return_assembled_packet(size_t bytes_consumed, OggDemuxState& s
 
     bool is_last = (current_segment_index_ >= current_page_.segment_count);
     state.packet.is_last_on_page = is_last;
+    state.packet.is_end_of_packet = true;
     state.packet.granule_position = is_last ? granule_position_ : OGG_INVALID_GRANULE_POSITION;
 
     // Reset assembly state
@@ -1162,6 +1203,7 @@ void OggDemuxer::handle_zero_copy_return(const uint8_t* packet_ptr, const Packet
 
     bool is_last = (current_segment_index_ >= current_page_.segment_count);
     state.packet.is_last_on_page = is_last;
+    state.packet.is_end_of_packet = true;
     state.packet.granule_position = is_last ? granule_position_ : OGG_INVALID_GRANULE_POSITION;
 
     // Check if page complete

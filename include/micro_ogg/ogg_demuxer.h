@@ -86,6 +86,7 @@ struct OggPacket {
     bool is_bos;               // Beginning of stream flag
     bool is_eos;               // End of stream flag
     bool is_last_on_page;      // Last packet completing on current page
+    bool is_end_of_packet;     // True when this data reaches a packet boundary (streaming mode)
 };
 
 /**
@@ -203,9 +204,12 @@ public:
     /**
      * @brief Get next raw body data from the Ogg stream (streaming mode)
      *
-     * Strips Ogg framing and offers raw body bytes as a zero-copy pointer.
-     * No internal buffering is performed — only the header staging buffer is allocated.
+     * Strips Ogg framing and offers raw body bytes as a zero-copy pointer,
+     * capped at the current packet boundary. No internal buffering is performed —
+     * only the header staging buffer is allocated.
      * The caller must call report_consumed() to indicate how many body bytes were used.
+     * When is_end_of_packet is true, the offered data reaches a packet boundary,
+     * making it safe to switch to get_next_packet() after consuming.
      *
      * @param input Input data pointer
      * @param input_len Available input data length
