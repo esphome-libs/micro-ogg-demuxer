@@ -176,7 +176,7 @@ OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
 
 Streaming mode that skips full packet assembly and internal buffering entirely. `get_next_data()` strips Ogg framing and returns raw body bytes as a zero-copy pointer, capped at the current packet boundary. Segment tracking, CRC accumulation, and page finalization are handled automatically.
 
-Only the header staging buffer (282 bytes) is allocated. No internal packet buffer is needed.
+No heap allocation is performed — only the inline header staging buffer (282 bytes) is used. No internal packet buffer is needed.
 
 - `bytes_consumed` includes both header and body bytes; advance the input pointer by this amount.
 - `is_end_of_packet` is true when the offered data reaches a packet boundary, making it safe to switch to `get_next_packet()`.
@@ -207,11 +207,11 @@ Reset demuxer state. Does not deallocate buffers.
 
 ## Memory Usage
 
-The demuxer allocates buffers on first call to `get_next_packet()` (or only the header staging buffer when using `get_next_data()`):
+The header staging buffer is an inline member (no heap allocation). The internal packet assembly buffer is allocated on first call to `get_next_packet()` (`get_next_data()` requires no heap allocation):
 
 | Buffer                | Size       | Description                           |
 | --------------------- | ---------- | ------------------------------------- |
-| `page_header_staging` | 282 bytes  | Header accumulation and segment table |
+| `page_header_staging` | 282 bytes  | Inline header accumulation and segment table |
 | `internal_buffer`     | min -> max | Packet assembly, grows as needed      |
 
 **Typical memory usage**: 1-4 KB per demuxer instance for most audio streams.
@@ -297,7 +297,7 @@ microOggDemuxer is designed with these principles:
 
 1. **Platform-agnostic**: Works on embedded systems, desktop, and anywhere C++11 runs
 2. **Zero dependencies**: No libogg, no platform-specific code
-3. **Memory efficient**: Lazy allocation, dynamic growth, zero-copy when possible
+3. **Memory efficient**: Minimal allocation, dynamic growth, zero-copy when possible
 4. **Flexible**: Custom allocators, configurable buffer sizes, optional CRC
 5. **RFC 3533 based**: Single logical bitstream Ogg page demuxing. For multiplexed files (grouped streams), callers must filter pages by serial number externally.
 
