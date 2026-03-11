@@ -29,11 +29,16 @@ microOggDemuxer is a lightweight, platform-agnostic Ogg container demuxer for em
 
 **Zero-copy optimization**: Packets are returned as zero-copy pointers when they fit entirely within the input buffer. Internal buffering only occurs when packets span page or input buffer boundaries.
 
+**Two usage modes**:
+
+- `get_next_packet()` - Assembles complete Ogg packets, buffering internally when packets span pages/buffers
+- `get_next_data()` - Streaming mode that skips internal buffering entirely. Returns raw body data as zero-copy pointers capped at packet boundaries; segment tracking, CRC, and page finalization are automatic
+
 **Memory model**:
 
 - Lazy allocation on first `get_next_packet()` call
 - `page_header_staging_` (282 bytes) - Fixed buffer for header accumulation
-- `internal_buffer_` - Dynamic buffer that grows from `min_buffer_size` to `max_buffer_size`
+- `internal_buffer_` - Dynamic buffer that grows from `min_buffer_size` to `max_buffer_size` (only allocated in `get_next_packet()` mode)
 - Custom allocators supported via `OggDemuxerConfig`
 
 ## Key Design Constraints

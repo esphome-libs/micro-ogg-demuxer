@@ -69,8 +69,10 @@ enum OggDemuxResult : int8_t {
     OGG_STREAM_EOS_ERROR = -6,        // EOS flag violation (EOS with continued packet)
     OGG_STREAM_SERIAL_MISMATCH = -7,  // New stream serial (concatenated stream)
 
+    OGG_STREAM_CONTINUATION_ERROR = -8,  // Continued flag inconsistent with previous page
+
     // Resource errors
-    OGG_ALLOCATION_FAILED = -8  // Memory allocation failed
+    OGG_ALLOCATION_FAILED = -9  // Memory allocation failed
 };
 
 /**
@@ -86,6 +88,7 @@ struct OggPacket {
     bool is_bos;               // Beginning of stream flag
     bool is_eos;               // End of stream flag
     bool is_last_on_page;      // Last packet completing on current page
+    bool is_end_of_packet;     // True when this data reaches a packet boundary (streaming mode)
 };
 
 /**
@@ -201,6 +204,34 @@ public:
     OggDemuxState get_next_packet(const uint8_t* input, size_t input_len);
 
     /**
+     * @brief Get next raw body data from the Ogg stream (streaming mode)
+     *
+     * Strips Ogg framing and offers raw body bytes as a zero-copy pointer,
+     * capped at the current packet boundary. No internal buffering is performed.
+     * Only the header staging buffer is allocated. Segment tracking, CRC accumulation,
+     * and page finalization are handled automatically.
+     *
+     * When is_end_of_packet is true, the offered data reaches a packet boundary,
+     * making it safe to switch to get_next_packet() after consuming.
+     *
+     * @param input Input data pointer
+     * @param input_len Available input data length
+     * @return OggDemuxState with result, bytes_consumed (header + body bytes), and packet data
+     *
+     * Usage:
+     * @code
+     * OggDemuxState state = demuxer.get_next_data(input, len);
+     * if (state.result == OGG_OK) {
+     *     // Use packet.data before advancing input (it points into the input buffer)
+     *     decoder.decode(state.packet.data, state.packet.length);
+     * }
+     * input += state.bytes_consumed;
+     * len -= state.bytes_consumed;
+     * @endcode
+     */
+    OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
+
+    /**
      * @brief Reset demuxer state
      */
     void reset();
@@ -307,11 +338,16 @@ private:
     // Compare incremental CRC against stored page checksum
     OggDemuxResult validate_page_crc() const;
 
+    // Lazily allocate page_header_staging_ only (for streaming mode)
+    bool ensure_header_staging_allocated(OggDemuxState& state);
+
     // Lazily allocate page_header_staging_ and internal_buffer_ on first use
     bool ensure_buffers_allocated(OggDemuxState& state);
 
     // Handle STATE_EXPECT_PAGE_HEADER and STATE_ACCUMULATING_PAGE_HEADER
-    InternalResult handle_page_header(const uint8_t* input, size_t input_len, OggDemuxState& state);
+    // When attempt_packet_zero_copy is false, skips the zero-copy packet optimization
+    InternalResult handle_page_header(const uint8_t* input, size_t input_len, OggDemuxState& state,
+                                      bool attempt_packet_zero_copy = true);
 
     // Skip packets that exceed max_buffer_size without buffering
     void handle_skipping_packet(const uint8_t* input, size_t input_len, OggDemuxState& state);
@@ -330,7 +366,7 @@ private:
     bool is_at_packet_boundary() const;
 
     // Validate CRC and transition to STATE_EXPECT_PAGE_HEADER when page is consumed
-    bool finalize_page(OggDemuxState& state);
+    OggDemuxResult finalize_page();
 
     // Accumulate partial header bytes into page_header_staging_
     InternalResult accumulate_header(const uint8_t* input, size_t input_len, size_t& bytes_added,
@@ -362,6 +398,7 @@ private:
     size_t max_buffer_size_{0};                 // Maximum buffer size limit
     size_t current_segment_bytes_consumed_{0};  // Bytes consumed from current segment
     size_t page_body_bytes_consumed_{0};        // Total bytes consumed from current page body
+    size_t page_body_size_{0};                  // Total page body size (cached from segment table)
     size_t packet_assembly_size_{0};            // Size of packet being assembled
     size_t bytes_to_skip_{0};                   // Remaining bytes to skip in current packet
 

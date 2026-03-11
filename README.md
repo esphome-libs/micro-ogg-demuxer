@@ -8,6 +8,7 @@ A lightweight, platform-agnostic Ogg container demuxer for embedded systems and 
 
 - **Zero-copy optimization**: Returns pointers directly to input buffer when possible
 - **Streaming demux**: Feed data in chunks, demuxer handles internal buffering
+- **Raw streaming mode**: `get_next_data()` skips packet assembly entirely for byte-level streaming to decoders
 - **Dynamic buffer growth**: Starts small (1KB), grows as needed (configurable max)
 - **Custom allocators**: Bring your own malloc/free/realloc or use defaults
 - **Platform-agnostic**: No dependencies on ESP-IDF, libogg, or any platform-specific code
@@ -167,6 +168,35 @@ Demux input and return next complete packet. Returns struct containing:
 - `bytes_consumed`: How many input bytes were consumed
 - `packet`: Packet data (only valid if result == OGG_OK)
 
+#### `get_next_data()` (Streaming Mode)
+
+```cpp
+OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
+```
+
+Streaming mode that skips full packet assembly and internal buffering entirely. `get_next_data()` strips Ogg framing and returns raw body bytes as a zero-copy pointer, capped at the current packet boundary. Segment tracking, CRC accumulation, and page finalization are handled automatically.
+
+Only the header staging buffer (282 bytes) is allocated. No internal packet buffer is needed.
+
+- `bytes_consumed` includes both header and body bytes; advance the input pointer by this amount.
+- `is_end_of_packet` is true when the offered data reaches a packet boundary, making it safe to switch to `get_next_packet()`.
+
+```cpp
+micro_ogg::OggDemuxer demuxer;
+
+while (have_data) {
+    micro_ogg::OggDemuxState state = demuxer.get_next_data(input, len);
+
+    if (state.result == micro_ogg::OGG_OK) {
+        // Use packet.data before advancing input (it points into the input buffer)
+        decoder.decode(state.packet.data, state.packet.length);
+    }
+
+    input += state.bytes_consumed;
+    len -= state.bytes_consumed;
+}
+```
+
 #### `reset()`
 
 ```cpp
@@ -177,7 +207,7 @@ Reset demuxer state. Does not deallocate buffers.
 
 ## Memory Usage
 
-The demuxer allocates buffers on first call to `get_next_packet()`:
+The demuxer allocates buffers on first call to `get_next_packet()` (or only the header staging buffer when using `get_next_data()`):
 
 | Buffer                | Size       | Description                           |
 | --------------------- | ---------- | ------------------------------------- |

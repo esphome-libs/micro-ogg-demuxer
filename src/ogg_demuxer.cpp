@@ -41,7 +41,8 @@ constexpr size_t OGG_CHECKSUM_OFFSET = 22;  // Offset to checksum field
 
 // Little-endian helpers
 static inline uint32_t read_le32(const uint8_t* p) {
-    return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24);
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
 static inline uint64_t read_le64(const uint8_t* p) {
@@ -88,13 +89,15 @@ static const uint32_t crc_lookup[256] = {
 
 static uint32_t calculate_crc32(const uint8_t* buffer, size_t size, uint32_t crc) {
     while (size >= 8) {
-        crc ^= (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
+        crc ^= (static_cast<uint32_t>(buffer[0]) << 24) | (static_cast<uint32_t>(buffer[1]) << 16) |
+               (static_cast<uint32_t>(buffer[2]) << 8) | buffer[3];
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
 
-        crc ^= (buffer[4] << 24) | (buffer[5] << 16) | (buffer[6] << 8) | buffer[7];
+        crc ^= (static_cast<uint32_t>(buffer[4]) << 24) | (static_cast<uint32_t>(buffer[5]) << 16) |
+               (static_cast<uint32_t>(buffer[6]) << 8) | buffer[7];
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
         crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
@@ -168,6 +171,7 @@ void OggDemuxer::reset() {
     current_segment_index_ = 0;
     current_segment_bytes_consumed_ = 0;
     page_body_bytes_consumed_ = 0;
+    page_body_size_ = 0;
     packet_assembly_size_ = 0;
     assembling_packet_ = false;
     skipping_packet_ = false;
@@ -264,6 +268,186 @@ OggDemuxState OggDemuxer::get_next_packet(const uint8_t* input, size_t input_len
 }
 
 // ==============================================================================
+// PUBLIC API: Streaming Mode
+// ==============================================================================
+
+OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) {
+    OggDemuxState state{};
+
+    if (input_len > 0 && !input) {
+        state.result = OGG_INVALID_CAPTURE;
+        state.bytes_consumed = 0;
+        state.packet.length = 0;
+        state.packet.is_bos = false;
+        state.packet.is_eos = false;
+        state.packet.is_last_on_page = false;
+        state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+        return state;
+    }
+
+    // Only allocate header staging - no internal buffer needed for streaming
+    if (!ensure_header_staging_allocated(state)) {
+        return state;
+    }
+
+    state.bytes_consumed = 0;
+    state.packet.length = 0;
+    state.packet.data = nullptr;
+    state.packet.is_bos = false;
+    state.packet.is_eos = false;
+    state.packet.is_last_on_page = false;
+    state.packet.is_end_of_packet = false;
+    state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+
+    // Header states: parse header without zero-copy packet optimization
+    if (state_ == STATE_EXPECT_PAGE_HEADER || state_ == STATE_ACCUMULATING_PAGE_HEADER) {
+        InternalResult result = handle_page_header(input, input_len, state, false);
+        if (result != InternalResult::OK) {
+            return state;
+        }
+        // Header parsed, now in STATE_PROCESSING_SEGMENTS
+        // Check if input has remaining bytes to offer as body data
+        size_t header_bytes = state.bytes_consumed;
+        const uint8_t* remaining_input = input + header_bytes;
+        size_t remaining_len = (header_bytes < input_len) ? (input_len - header_bytes) : 0;
+
+        if (remaining_len == 0) {
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
+
+        // Fall through to body offering
+        size_t total_body = page_body_size_;
+        size_t remaining_body = total_body - page_body_bytes_consumed_;
+
+        // Handle zero-body pages: transition back to header parsing
+        if (remaining_body == 0) {
+            OggDemuxResult page_result = finalize_page();
+            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
+            return state;
+        }
+
+        // Skip past any zero-length packets at the current position
+        while (current_segment_index_ < current_page_.segment_count &&
+               segment_table_[current_segment_index_] == 0) {
+            current_segment_index_++;
+            current_segment_bytes_consumed_ = 0;
+        }
+
+        // Cap at packet boundary so we don't bleed into the next packet
+        PacketInfo pkt = scan_for_next_packet(current_segment_index_);
+        size_t bytes_remaining_in_packet = pkt.size - current_segment_bytes_consumed_;
+        size_t to_offer = std::min(remaining_len, bytes_remaining_in_packet);
+
+        if (to_offer == 0) {
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
+
+        state.packet.data = remaining_input;
+        state.packet.length = to_offer;
+        state.packet.granule_position = granule_position_;
+        state.packet.is_bos = current_packet_is_bos_;
+        state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
+        state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
+
+        // Auto-advance: accumulate CRC, update segment tracking
+        if (enable_crc_) {
+            incremental_crc_ = calculate_crc32(remaining_input, to_offer, incremental_crc_);
+        }
+        page_body_bytes_consumed_ += to_offer;
+        advance_through_segments(to_offer);
+        current_packet_is_bos_ = false;
+
+        state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
+        state.bytes_consumed = header_bytes + to_offer;
+
+        // Finalize page if fully consumed
+        if (page_body_bytes_consumed_ >= total_body) {
+            OggDemuxResult page_result = finalize_page();
+            if (page_result != OGG_OK) {
+                state.result = page_result;
+                return state;
+            }
+        }
+
+        state.result = OGG_OK;
+        return state;
+    }
+
+    // STATE_PROCESSING_SEGMENTS: offer body bytes as zero-copy pointer
+    if (state_ == STATE_PROCESSING_SEGMENTS) {
+        size_t total_body = page_body_size_;
+        size_t remaining_body = total_body - page_body_bytes_consumed_;
+
+        // Handle fully consumed page: transition back to header parsing
+        if (remaining_body == 0) {
+            OggDemuxResult page_result = finalize_page();
+            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
+            return state;
+        }
+
+        // Skip past any zero-length packets at the current position
+        while (current_segment_index_ < current_page_.segment_count &&
+               segment_table_[current_segment_index_] == 0) {
+            current_segment_index_++;
+            current_segment_bytes_consumed_ = 0;
+        }
+
+        // Check if skipping zero-length packets consumed the page
+        remaining_body = total_body - page_body_bytes_consumed_;
+        if (remaining_body == 0) {
+            OggDemuxResult page_result = finalize_page();
+            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
+            return state;
+        }
+
+        // Cap at packet boundary so we don't bleed into the next packet
+        PacketInfo pkt = scan_for_next_packet(current_segment_index_);
+        size_t bytes_remaining_in_packet = pkt.size - current_segment_bytes_consumed_;
+        size_t to_offer = std::min(input_len, bytes_remaining_in_packet);
+
+        if (to_offer == 0) {
+            state.result = OGG_NEED_MORE_DATA;
+            return state;
+        }
+
+        state.packet.data = input;
+        state.packet.length = to_offer;
+        state.packet.granule_position = granule_position_;
+        state.packet.is_bos = current_packet_is_bos_;
+        state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
+        state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
+
+        // Auto-advance: accumulate CRC, update segment tracking
+        if (enable_crc_) {
+            incremental_crc_ = calculate_crc32(input, to_offer, incremental_crc_);
+        }
+        page_body_bytes_consumed_ += to_offer;
+        advance_through_segments(to_offer);
+        current_packet_is_bos_ = false;
+
+        state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
+        state.bytes_consumed = to_offer;
+
+        // Finalize page if fully consumed
+        if (page_body_bytes_consumed_ >= total_body) {
+            OggDemuxResult page_result = finalize_page();
+            if (page_result != OGG_OK) {
+                state.result = page_result;
+                return state;
+            }
+        }
+
+        state.result = OGG_OK;
+        return state;
+    }
+
+    state.result = OGG_NEED_MORE_DATA;
+    return state;
+}
+
+// ==============================================================================
 // PRIVATE HELPERS: Page Header Parsing
 // ==============================================================================
 
@@ -312,8 +496,7 @@ OggDemuxResult OggDemuxer::validate_page_crc() const {
     return OGG_OK;
 }
 
-bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
-    // Lazy allocation: allocate buffers on first use
+bool OggDemuxer::ensure_header_staging_allocated(OggDemuxState& state) {
     if (!page_header_staging_) {
         void* ptr = config_.alloc ? config_.alloc(OGG_MAX_HEADER_SIZE)
                                   : std::calloc(1, OGG_MAX_HEADER_SIZE);
@@ -325,6 +508,14 @@ bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
         page_header_staging_ = (uint8_t*)ptr;
         // segment_table_ points into page_header_staging_ (no separate allocation)
         segment_table_ = page_header_staging_ + OGG_PAGE_HEADER_SIZE;
+    }
+
+    return true;
+}
+
+bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
+    if (!ensure_header_staging_allocated(state)) {
+        return false;
     }
 
     if (!internal_buffer_) {
@@ -443,8 +634,7 @@ void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
     }
 
     // Check if page body fully consumed
-    if (page_body_bytes_consumed_ >=
-        calculate_body_size(segment_table_, current_page_.segment_count)) {
+    if (page_body_bytes_consumed_ >= page_body_size_) {
         if (enable_crc_ && validate_page_crc() != OGG_OK) {
             state.result = OGG_CRC_FAILED;
             return;
@@ -482,6 +672,7 @@ void OggDemuxer::return_assembled_packet(size_t bytes_consumed, OggDemuxState& s
 
     bool is_last = (current_segment_index_ >= current_page_.segment_count);
     state.packet.is_last_on_page = is_last;
+    state.packet.is_end_of_packet = true;
     state.packet.granule_position = is_last ? granule_position_ : OGG_INVALID_GRANULE_POSITION;
 
     // Reset assembly state
@@ -523,10 +714,9 @@ bool OggDemuxer::is_at_packet_boundary() const {
     return false;
 }
 
-bool OggDemuxer::finalize_page(OggDemuxState& state) {
+OggDemuxResult OggDemuxer::finalize_page() {
     if (enable_crc_ && validate_page_crc() != OGG_OK) {
-        state.result = OGG_CRC_FAILED;
-        return false;
+        return OGG_CRC_FAILED;
     }
 
     // Check if last segment = 255 (packet continues to next page)
@@ -534,7 +724,7 @@ bool OggDemuxer::finalize_page(OggDemuxState& state) {
         (segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
 
     state_ = STATE_EXPECT_PAGE_HEADER;
-    return true;
+    return OGG_OK;
 }
 
 OggDemuxer::InternalResult OggDemuxer::accumulate_header(const uint8_t* input, size_t input_len,
@@ -615,6 +805,16 @@ bool OggDemuxer::validate_stream_consistency(OggDemuxState& state) {
     }
     expected_page_sequence_++;
 
+    // RFC 3533 Section 6: Validate continued packet flag consistency
+    // A page with the continued flag set must follow a page whose last segment was 255
+    // (indicating the packet continues). Skip the first page (BOS) since there's no previous.
+    bool has_continued_flag = (current_page_.header_type & OGG_CONTINUED_PACKET) != 0;
+    if (current_page_.page_sequence > 0 &&
+        has_continued_flag != previous_page_ended_with_continued_packet_) {
+        state.result = OGG_STREAM_CONTINUATION_ERROR;
+        return false;
+    }
+
     // RFC 3533 validation - EOS flag with continued packet
     if ((current_page_.header_type & OGG_END_OF_STREAM) && current_page_.segment_count > 0 &&
         segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE) {
@@ -627,8 +827,7 @@ bool OggDemuxer::validate_stream_consistency(OggDemuxState& state) {
 
 void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len,
                                           OggDemuxState& state) {
-    size_t remaining_page_body = calculate_body_size(segment_table_, current_page_.segment_count) -
-                                 page_body_bytes_consumed_;
+    size_t remaining_page_body = page_body_size_ - page_body_bytes_consumed_;
 
     // Calculate bytes to packet end, accounting for partially consumed current segment
     size_t bytes_to_packet_end = 0;
@@ -665,9 +864,10 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
         }
 
         // Check if page body is fully consumed
-        if (page_body_bytes_consumed_ >=
-            calculate_body_size(segment_table_, current_page_.segment_count)) {
-            if (!finalize_page(state)) {
+        if (page_body_bytes_consumed_ >= page_body_size_) {
+            OggDemuxResult page_result = finalize_page();
+            if (page_result != OGG_OK) {
+                state.result = page_result;
                 return;
             }
             state.result = OGG_NEED_MORE_DATA;
@@ -729,9 +929,10 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
     }
 
     // Check if page body fully consumed
-    if (page_body_bytes_consumed_ >=
-        calculate_body_size(segment_table_, current_page_.segment_count)) {
-        if (!finalize_page(state)) {
+    if (page_body_bytes_consumed_ >= page_body_size_) {
+        OggDemuxResult page_result = finalize_page();
+        if (page_result != OGG_OK) {
+            state.result = page_result;
             return;
         }
     }
@@ -740,7 +941,8 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
 }
 
 OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, size_t input_len,
-                                                          OggDemuxState& state) {
+                                                          OggDemuxState& state,
+                                                          bool attempt_packet_zero_copy) {
     const uint8_t* header_data = nullptr;
     size_t header_data_len = 0;
     size_t staged_bytes = page_header_staging_size_;
@@ -788,8 +990,9 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
                     current_page_.segment_count);
     }
 
-    // Validate page body size
-    size_t total_page_body_size = calculate_body_size(segment_table_, current_page_.segment_count);
+    // Cache and validate page body size
+    page_body_size_ = calculate_body_size(segment_table_, current_page_.segment_count);
+    size_t total_page_body_size = page_body_size_;
     if (total_page_body_size > OGG_MAX_PAGE_BODY_SIZE) {
         state.result = OGG_STREAM_SEQUENCE_ERROR;
         return InternalResult::PACKET_READY;
@@ -851,12 +1054,12 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
         bos_flag_used_ = true;
     }
 
-    // Check for zero-copy opportunity (only when not assembling a continued packet)
+    // Check for zero-copy opportunity (only in packet mode, not when assembling a continued packet)
     size_t bytes_from_input_for_header = (staged_bytes == 0) ? header_size : bytes_added_to_staging;
     size_t remaining_in_input =
         (bytes_from_input_for_header < input_len) ? (input_len - bytes_from_input_for_header) : 0;
 
-    if (remaining_in_input > 0 && !assembling_packet_) {
+    if (attempt_packet_zero_copy && remaining_in_input > 0 && !assembling_packet_) {
         PacketInfo first_packet = scan_for_next_packet(0);
         if (first_packet.complete && remaining_in_input >= first_packet.size) {
             const uint8_t* body_start = input + bytes_from_input_for_header;
@@ -875,8 +1078,7 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
 
 OggDemuxer::InternalResult OggDemuxer::handle_zero_copy_path(const uint8_t* input, size_t input_len,
                                                              OggDemuxState& state) {
-    size_t remaining_page_body = calculate_body_size(segment_table_, current_page_.segment_count) -
-                                 page_body_bytes_consumed_;
+    size_t remaining_page_body = page_body_size_ - page_body_bytes_consumed_;
 
     // Scan segment table to find next packet size
     PacketInfo next_packet = scan_for_next_packet(current_segment_index_);
@@ -927,8 +1129,7 @@ OggDemuxer::InternalResult OggDemuxer::handle_zero_copy_path(const uint8_t* inpu
         advance_through_segments(to_buffer);
 
         // Check if page body fully consumed
-        if (page_body_bytes_consumed_ >=
-            calculate_body_size(segment_table_, current_page_.segment_count)) {
+        if (page_body_bytes_consumed_ >= page_body_size_) {
             // Validate CRC
             if (enable_crc_ && validate_page_crc() != OGG_OK) {
                 state.result = OGG_CRC_FAILED;
@@ -1022,6 +1223,7 @@ void OggDemuxer::handle_zero_copy_return(const uint8_t* packet_ptr, const Packet
 
     bool is_last = (current_segment_index_ >= current_page_.segment_count);
     state.packet.is_last_on_page = is_last;
+    state.packet.is_end_of_packet = true;
     state.packet.granule_position = is_last ? granule_position_ : OGG_INVALID_GRANULE_POSITION;
 
     // Check if page complete

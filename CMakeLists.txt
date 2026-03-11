@@ -17,4 +17,4 @@ target_include_directories(micro_ogg_demuxer
         $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(micro_ogg_demuxer PUBLIC cxx_std_11)
+target_compile_features(micro_ogg_demuxer PRIVATE cxx_std_11)
