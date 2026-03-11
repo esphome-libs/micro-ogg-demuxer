@@ -805,6 +805,16 @@ bool OggDemuxer::validate_stream_consistency(OggDemuxState& state) {
     }
     expected_page_sequence_++;
 
+    // RFC 3533 Section 6: Validate continued packet flag consistency
+    // A page with the continued flag set must follow a page whose last segment was 255
+    // (indicating the packet continues). Skip the first page (BOS) since there's no previous.
+    bool has_continued_flag = (current_page_.header_type & OGG_CONTINUED_PACKET) != 0;
+    if (current_page_.page_sequence > 0 &&
+        has_continued_flag != previous_page_ended_with_continued_packet_) {
+        state.result = OGG_STREAM_CONTINUATION_ERROR;
+        return false;
+    }
+
     // RFC 3533 validation - EOS flag with continued packet
     if ((current_page_.header_type & OGG_END_OF_STREAM) && current_page_.segment_count > 0 &&
         segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE) {

@@ -69,8 +69,10 @@ enum OggDemuxResult : int8_t {
     OGG_STREAM_EOS_ERROR = -6,        // EOS flag violation (EOS with continued packet)
     OGG_STREAM_SERIAL_MISMATCH = -7,  // New stream serial (concatenated stream)
 
+    OGG_STREAM_CONTINUATION_ERROR = -8,  // Continued flag inconsistent with previous page
+
     // Resource errors
-    OGG_ALLOCATION_FAILED = -8  // Memory allocation failed
+    OGG_ALLOCATION_FAILED = -9  // Memory allocation failed
 };
 
 /**
