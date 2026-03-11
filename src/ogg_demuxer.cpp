@@ -296,6 +296,7 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
     state.packet.is_bos = false;
     state.packet.is_eos = false;
     state.packet.is_last_on_page = false;
+    state.packet.is_end_of_packet = false;
     state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
 
     // Header states: parse header without zero-copy packet optimization
@@ -348,9 +349,28 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
         state.packet.granule_position = granule_position_;
         state.packet.is_bos = current_packet_is_bos_;
         state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
-        state.packet.is_last_on_page = (page_body_bytes_consumed_ + to_offer >= total_body);
         state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
-        // bytes_consumed only includes header bytes, not body bytes
+
+        // Auto-advance: accumulate CRC, update segment tracking
+        if (enable_crc_) {
+            incremental_crc_ = calculate_crc32(remaining_input, to_offer, incremental_crc_);
+        }
+        page_body_bytes_consumed_ += to_offer;
+        advance_through_segments(to_offer);
+        current_packet_is_bos_ = false;
+
+        state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
+        state.bytes_consumed = header_bytes + to_offer;
+
+        // Finalize page if fully consumed
+        if (page_body_bytes_consumed_ >= total_body) {
+            OggDemuxResult page_result = finalize_page();
+            if (page_result != OGG_OK) {
+                state.result = page_result;
+                return state;
+            }
+        }
+
         state.result = OGG_OK;
         return state;
     }
@@ -397,44 +417,34 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
         state.packet.granule_position = granule_position_;
         state.packet.is_bos = current_packet_is_bos_;
         state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
-        state.packet.is_last_on_page = (page_body_bytes_consumed_ + to_offer >= total_body);
         state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
-        state.bytes_consumed = 0;
+
+        // Auto-advance: accumulate CRC, update segment tracking
+        if (enable_crc_) {
+            incremental_crc_ = calculate_crc32(input, to_offer, incremental_crc_);
+        }
+        page_body_bytes_consumed_ += to_offer;
+        advance_through_segments(to_offer);
+        current_packet_is_bos_ = false;
+
+        state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
+        state.bytes_consumed = to_offer;
+
+        // Finalize page if fully consumed
+        if (page_body_bytes_consumed_ >= total_body) {
+            OggDemuxResult page_result = finalize_page();
+            if (page_result != OGG_OK) {
+                state.result = page_result;
+                return state;
+            }
+        }
+
         state.result = OGG_OK;
         return state;
     }
 
     state.result = OGG_NEED_MORE_DATA;
     return state;
-}
-
-OggDemuxResult OggDemuxer::report_consumed(size_t body_bytes_consumed, const uint8_t* data) {
-    if (state_ != STATE_PROCESSING_SEGMENTS || body_bytes_consumed == 0) {
-        return OGG_NEED_MORE_DATA;
-    }
-
-    // Clamp to remaining body bytes to prevent state corruption
-    size_t total_body = page_body_size_;
-    size_t remaining_body = total_body - page_body_bytes_consumed_;
-    if (body_bytes_consumed > remaining_body) {
-        body_bytes_consumed = remaining_body;
-    }
-
-    // Accumulate CRC over consumed body bytes
-    if (enable_crc_ && data) {
-        incremental_crc_ = calculate_crc32(data, body_bytes_consumed, incremental_crc_);
-    }
-
-    page_body_bytes_consumed_ += body_bytes_consumed;
-    advance_through_segments(body_bytes_consumed);
-
-    // Clear BOS after first data return
-    current_packet_is_bos_ = false;
-
-    if (page_body_bytes_consumed_ >= total_body) {
-        return finalize_page();
-    }
-    return OGG_NEED_MORE_DATA;
 }
 
 // ==============================================================================

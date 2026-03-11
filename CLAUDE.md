@@ -32,7 +32,7 @@ microOggDemuxer is a lightweight, platform-agnostic Ogg container demuxer for em
 **Two usage modes**:
 
 - `get_next_packet()` - Assembles complete Ogg packets, buffering internally when packets span pages/buffers
-- `get_next_data()` / `report_consumed()` - Streaming mode that skips internal buffering entirely. Returns raw body data as zero-copy pointers; the caller controls consumption via `report_consumed()`
+- `get_next_data()` - Streaming mode that skips internal buffering entirely. Returns raw body data as zero-copy pointers capped at packet boundaries; segment tracking, CRC, and page finalization are automatic
 
 **Memory model**:
 

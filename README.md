@@ -168,35 +168,32 @@ Demux input and return next complete packet. Returns struct containing:
 - `bytes_consumed`: How many input bytes were consumed
 - `packet`: Packet data (only valid if result == OGG_OK)
 
-#### `get_next_data()` / `report_consumed()` (Streaming Mode)
+#### `get_next_data()` (Streaming Mode)
 
 ```cpp
 OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
-OggDemuxResult report_consumed(size_t body_bytes_consumed, const uint8_t* data = nullptr);
 ```
 
-Streaming mode that skips full packet assembly and internal buffering entirely. `get_next_data()` strips Ogg framing and returns raw body bytes as a zero-copy pointer. The caller then feeds data directly to a decoder and reports how many bytes were consumed via `report_consumed()`.
+Streaming mode that skips full packet assembly and internal buffering entirely. `get_next_data()` strips Ogg framing and returns raw body bytes as a zero-copy pointer, capped at the current packet boundary. Segment tracking, CRC accumulation, and page finalization are handled automatically.
 
-Only the header staging buffer (282 bytes) is allocated — no internal packet buffer is needed.
+Only the header staging buffer (282 bytes) is allocated. No internal packet buffer is needed.
 
-- `get_next_data()` returns the same `OggDemuxState` struct. `bytes_consumed` reflects header bytes only; body bytes are tracked separately via `report_consumed()`.
-- `report_consumed()` updates internal segment tracking. When the full page body is consumed, it validates CRC (if enabled) and transitions back to header parsing. Pass the data pointer for CRC accumulation, or `nullptr` to skip it.
+- `bytes_consumed` includes both header and body bytes; advance the input pointer by this amount.
+- `is_end_of_packet` is true when the offered data reaches a packet boundary, making it safe to switch to `get_next_packet()`.
 
 ```cpp
 micro_ogg::OggDemuxer demuxer;
 
 while (have_data) {
     micro_ogg::OggDemuxState state = demuxer.get_next_data(input, len);
-    input += state.bytes_consumed;
-    len -= state.bytes_consumed;
 
     if (state.result == micro_ogg::OGG_OK) {
-        // Feed raw body data directly to a decoder
-        size_t used = decoder.decode(state.packet.data, state.packet.length);
-        demuxer.report_consumed(used);
-        input += used;
-        len -= used;
+        // Use packet.data before advancing input (it points into the input buffer)
+        decoder.decode(state.packet.data, state.packet.length);
     }
+
+    input += state.bytes_consumed;
+    len -= state.bytes_consumed;
 }
 ```
 

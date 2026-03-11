@@ -205,47 +205,29 @@ public:
      * @brief Get next raw body data from the Ogg stream (streaming mode)
      *
      * Strips Ogg framing and offers raw body bytes as a zero-copy pointer,
-     * capped at the current packet boundary. No internal buffering is performed —
-     * only the header staging buffer is allocated.
-     * The caller must call report_consumed() to indicate how many body bytes were used.
+     * capped at the current packet boundary. No internal buffering is performed.
+     * Only the header staging buffer is allocated. Segment tracking, CRC accumulation,
+     * and page finalization are handled automatically.
+     *
      * When is_end_of_packet is true, the offered data reaches a packet boundary,
      * making it safe to switch to get_next_packet() after consuming.
      *
      * @param input Input data pointer
      * @param input_len Available input data length
-     * @return OggDemuxState with result, bytes_consumed (header bytes only), and packet data
+     * @return OggDemuxState with result, bytes_consumed (header + body bytes), and packet data
      *
      * Usage:
      * @code
      * OggDemuxState state = demuxer.get_next_data(input, len);
+     * if (state.result == OGG_OK) {
+     *     // Use packet.data before advancing input (it points into the input buffer)
+     *     decoder.decode(state.packet.data, state.packet.length);
+     * }
      * input += state.bytes_consumed;
      * len -= state.bytes_consumed;
-     * if (state.result == OGG_OK) {
-     *     size_t used = decoder.decode(state.packet.data, state.packet.length);
-     *     demuxer.report_consumed(used);
-     *     input += used;
-     *     len -= used;
-     * }
      * @endcode
      */
     OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
-
-    /**
-     * @brief Report how many body bytes were consumed by the decoder (streaming mode)
-     *
-     * Updates internal segment tracking. When the full page body is consumed,
-     * validates CRC (if enabled and data pointer provided) and transitions back
-     * to header parsing state.
-     *
-     * @param body_bytes_consumed Number of body bytes actually consumed
-     * @param data Pointer to the consumed body bytes for CRC accumulation (optional).
-     *             When CRC is enabled, pass the same pointer returned in the previous
-     *             get_next_data() call's packet.data to accumulate CRC over body bytes.
-     *             If nullptr, CRC accumulation is skipped for these bytes.
-     * @return OGG_NEED_MORE_DATA on success (more data needed), or OGG_CRC_FAILED
-     *         if CRC validation fails when the page is fully consumed
-     */
-    OggDemuxResult report_consumed(size_t body_bytes_consumed, const uint8_t* data = nullptr);
 
     /**
      * @brief Reset demuxer state
