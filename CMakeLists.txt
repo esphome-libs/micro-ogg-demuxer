@@ -5,7 +5,7 @@ if(TARGET micro_ogg_demuxer)
     return()
 endif()
 
-project(micro_ogg_demuxer VERSION 1.2.0 LANGUAGES CXX)
+project(micro_ogg_demuxer VERSION 1.2.1 LANGUAGES CXX)
 
 add_library(micro_ogg_demuxer STATIC
     src/ogg_demuxer.cpp
