@@ -4,6 +4,8 @@
 
 A lightweight, platform-agnostic Ogg container demuxer for embedded systems and general use.
 
+[![A project from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-project.png)](https://www.openhomefoundation.org/)
+
 ## Features
 
 - **Zero-copy optimization**: Returns pointers directly to input buffer when possible
