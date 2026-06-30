@@ -152,6 +152,7 @@ struct OggPacket {
     bool is_bos;                // Beginning of stream flag
     bool is_eos;                // End of stream flag
     bool is_last_on_page;       // Last packet on current page
+    bool is_end_of_packet;      // Data reaches a packet boundary (streaming mode)
 };
 ```
 
