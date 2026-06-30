@@ -1101,17 +1101,11 @@ OggDemuxer::InternalResult OggDemuxer::handle_zero_copy_path(const uint8_t* inpu
 
         // Check if page body fully consumed
         if (page_body_bytes_consumed_ >= page_body_size_) {
-            // Validate CRC
-            if (enable_crc_ && validate_page_crc() != OGG_OK) {
-                state.result = OGG_CRC_FAILED;
+            OggDemuxResult page_result = finalize_page();
+            if (page_result != OGG_OK) {
+                state.result = page_result;
                 return InternalResult::PACKET_READY;
             }
-
-            // Check if packet continues to next page
-            previous_page_ended_with_continued_packet_ =
-                (segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
-
-            state_ = STATE_EXPECT_PAGE_HEADER;
         }
     }
 
