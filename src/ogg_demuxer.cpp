@@ -485,6 +485,21 @@ OggDemuxResult OggDemuxer::validate_page_crc() const {
     return OGG_OK;
 }
 
+void OggDemuxer::stage_header_and_seed_crc(const uint8_t* header_data, size_t header_size) {
+    if (page_header_staging_size_ == 0) {
+        std::memcpy(page_header_staging_, header_data, header_size);
+    }
+
+    if (enable_crc_) {
+        // The checksum field is zeroed for the computation, then restored
+        uint8_t saved_crc[4];
+        std::memcpy(saved_crc, page_header_staging_ + OGG_CHECKSUM_OFFSET, 4);
+        std::memset(page_header_staging_ + OGG_CHECKSUM_OFFSET, 0, 4);
+        incremental_crc_ = calculate_crc32(page_header_staging_, header_size, 0);
+        std::memcpy(page_header_staging_ + OGG_CHECKSUM_OFFSET, saved_crc, 4);
+    }
+}
+
 bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
     if (!internal_buffer_) {
         internal_buffer_capacity_ = min_buffer_size_;
@@ -972,21 +987,11 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
 
     // Handle empty page
     if (current_page_.segment_count == 0) {
-        if (page_header_staging_size_ == 0) {
-            std::memcpy(page_header_staging_, header_data, header_size);
-        }
+        stage_header_and_seed_crc(header_data, header_size);
 
-        if (enable_crc_) {
-            uint8_t saved_crc[4];
-            std::memcpy(saved_crc, page_header_staging_ + OGG_CHECKSUM_OFFSET, 4);
-            std::memset(page_header_staging_ + OGG_CHECKSUM_OFFSET, 0, 4);
-            incremental_crc_ = calculate_crc32(page_header_staging_, header_size, 0);
-            std::memcpy(page_header_staging_ + OGG_CHECKSUM_OFFSET, saved_crc, 4);
-
-            if (validate_page_crc() != OGG_OK) {
-                state.result = OGG_CRC_FAILED;
-                return InternalResult::PACKET_READY;
-            }
+        if (enable_crc_ && validate_page_crc() != OGG_OK) {
+            state.result = OGG_CRC_FAILED;
+            return InternalResult::PACKET_READY;
         }
 
         state.bytes_consumed = (bytes_added_to_staging > 0) ? bytes_added_to_staging : header_size;
@@ -997,17 +1002,7 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
     }
 
     // Non-empty page: initialize for packet extraction
-    if (page_header_staging_size_ == 0) {
-        std::memcpy(page_header_staging_, header_data, header_size);
-    }
-
-    if (enable_crc_) {
-        uint8_t saved_crc[4];
-        std::memcpy(saved_crc, page_header_staging_ + OGG_CHECKSUM_OFFSET, 4);
-        std::memset(page_header_staging_ + OGG_CHECKSUM_OFFSET, 0, 4);
-        incremental_crc_ = calculate_crc32(page_header_staging_, header_size, 0);
-        std::memcpy(page_header_staging_ + OGG_CHECKSUM_OFFSET, saved_crc, 4);
-    }
+    stage_header_and_seed_crc(header_data, header_size);
 
     current_segment_index_ = 0;
     current_segment_bytes_consumed_ = 0;

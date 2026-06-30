@@ -340,6 +340,10 @@ private:
     // Compare incremental CRC against stored page checksum
     OggDemuxResult validate_page_crc() const;
 
+    // Copy the full header into page_header_staging_ if not already staged, then
+    // seed incremental_crc_ over the header with the checksum field zeroed
+    void stage_header_and_seed_crc(const uint8_t* header_data, size_t header_size);
+
     // Lazily allocate internal_buffer_ on first use
     bool ensure_buffers_allocated(OggDemuxState& state);
 
