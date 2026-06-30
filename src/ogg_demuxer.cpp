@@ -551,10 +551,7 @@ void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
 
         // If page complete, check if packet continues to next page
         if (is_last) {
-            // Check if packet continues to next page
-            // If last segment = 255, the skipped packet continues to next page
-            bool continues_to_next_page =
-                (segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
+            bool continues_to_next_page = current_page_ends_with_continued_packet();
 
             if (continues_to_next_page) {
                 // Packet continues to next page - we need to keep skipping
@@ -608,10 +605,7 @@ void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
             return;
         }
 
-        // Check if packet continues to next page
-        bool continues_to_next_page =
-            (segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
-        previous_page_ended_with_continued_packet_ = continues_to_next_page;
+        previous_page_ended_with_continued_packet_ = current_page_ends_with_continued_packet();
 
         // RFC 3533: Set page boundary output for validation tracking
         state.packet.is_last_on_page = true;
@@ -682,14 +676,17 @@ bool OggDemuxer::is_at_packet_boundary() const {
     return false;
 }
 
+bool OggDemuxer::current_page_ends_with_continued_packet() const {
+    return current_page_.segment_count > 0 &&
+           segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE;
+}
+
 OggDemuxResult OggDemuxer::finalize_page() {
     if (enable_crc_ && validate_page_crc() != OGG_OK) {
         return OGG_CRC_FAILED;
     }
 
-    // Check if last segment = 255 (packet continues to next page)
-    previous_page_ended_with_continued_packet_ =
-        (segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE);
+    previous_page_ended_with_continued_packet_ = current_page_ends_with_continued_packet();
 
     state_ = STATE_EXPECT_PAGE_HEADER;
     return OGG_OK;
@@ -784,8 +781,8 @@ bool OggDemuxer::validate_stream_consistency(OggDemuxState& state) {
     }
 
     // RFC 3533 validation - EOS flag with continued packet
-    if ((current_page_.header_type & OGG_END_OF_STREAM) && current_page_.segment_count > 0 &&
-        segment_table_[current_page_.segment_count - 1] == OGG_MAX_LACING_VALUE) {
+    if ((current_page_.header_type & OGG_END_OF_STREAM) &&
+        current_page_ends_with_continued_packet()) {
         state.result = OGG_STREAM_EOS_ERROR;
         return false;
     }

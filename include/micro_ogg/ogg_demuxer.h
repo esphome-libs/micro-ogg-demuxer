@@ -364,6 +364,10 @@ private:
     // Check if current segment position is at a packet boundary
     bool is_at_packet_boundary() const;
 
+    // Check if the current page's last segment has lacing value 255, meaning a
+    // packet continues onto the next page
+    bool current_page_ends_with_continued_packet() const;
+
     // Validate CRC and transition to STATE_EXPECT_PAGE_HEADER when page is consumed
     OggDemuxResult finalize_page();
 
