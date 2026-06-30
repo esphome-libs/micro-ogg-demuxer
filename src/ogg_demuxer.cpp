@@ -294,10 +294,9 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
         if (result != InternalResult::OK) {
             return state;
         }
-        // Header parsed, now in STATE_PROCESSING_SEGMENTS
-        // Check if input has remaining bytes to offer as body data
+        // Header parsed, now in STATE_PROCESSING_SEGMENTS. Offer any input bytes
+        // left after the header as body data.
         size_t header_bytes = state.bytes_consumed;
-        const uint8_t* remaining_input = input + header_bytes;
         size_t remaining_len = (header_bytes < input_len) ? (input_len - header_bytes) : 0;
 
         if (remaining_len == 0) {
@@ -305,135 +304,78 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
             return state;
         }
 
-        // Fall through to body offering
-        size_t total_body = page_body_size_;
-        size_t remaining_body = total_body - page_body_bytes_consumed_;
-
-        // Handle zero-body pages: transition back to header parsing
-        if (remaining_body == 0) {
-            OggDemuxResult page_result = finalize_page();
-            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
-            return state;
-        }
-
-        // Skip past any zero-length packets at the current position
-        while (current_segment_index_ < current_page_.segment_count &&
-               segment_table_[current_segment_index_] == 0) {
-            current_segment_index_++;
-            current_segment_bytes_consumed_ = 0;
-        }
-
-        // Cap at packet boundary so we don't bleed into the next packet
-        PacketInfo pkt = scan_for_next_packet(current_segment_index_);
-        size_t bytes_remaining_in_packet = pkt.size - current_segment_bytes_consumed_;
-        size_t to_offer = std::min(remaining_len, bytes_remaining_in_packet);
-
-        if (to_offer == 0) {
-            state.result = OGG_NEED_MORE_DATA;
-            return state;
-        }
-
-        state.packet.data = remaining_input;
-        state.packet.length = to_offer;
-        state.packet.granule_position = granule_position_;
-        state.packet.is_bos = current_packet_is_bos_;
-        state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
-        state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
-
-        // Auto-advance: accumulate CRC, update segment tracking
-        if (enable_crc_) {
-            incremental_crc_ = calculate_crc32(remaining_input, to_offer, incremental_crc_);
-        }
-        page_body_bytes_consumed_ += to_offer;
-        advance_through_segments(to_offer);
-        current_packet_is_bos_ = false;
-
-        state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
-        state.bytes_consumed = header_bytes + to_offer;
-
-        // Finalize page if fully consumed
-        if (page_body_bytes_consumed_ >= total_body) {
-            OggDemuxResult page_result = finalize_page();
-            if (page_result != OGG_OK) {
-                state.result = page_result;
-                return state;
-            }
-        }
-
-        state.result = OGG_OK;
+        offer_body_data(input + header_bytes, remaining_len, header_bytes, state);
         return state;
     }
 
     // STATE_PROCESSING_SEGMENTS: offer body bytes as zero-copy pointer
     if (state_ == STATE_PROCESSING_SEGMENTS) {
-        size_t total_body = page_body_size_;
-        size_t remaining_body = total_body - page_body_bytes_consumed_;
-
-        // Handle fully consumed page: transition back to header parsing
-        if (remaining_body == 0) {
-            OggDemuxResult page_result = finalize_page();
-            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
-            return state;
-        }
-
-        // Skip past any zero-length packets at the current position
-        while (current_segment_index_ < current_page_.segment_count &&
-               segment_table_[current_segment_index_] == 0) {
-            current_segment_index_++;
-            current_segment_bytes_consumed_ = 0;
-        }
-
-        // Check if skipping zero-length packets consumed the page
-        remaining_body = total_body - page_body_bytes_consumed_;
-        if (remaining_body == 0) {
-            OggDemuxResult page_result = finalize_page();
-            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
-            return state;
-        }
-
-        // Cap at packet boundary so we don't bleed into the next packet
-        PacketInfo pkt = scan_for_next_packet(current_segment_index_);
-        size_t bytes_remaining_in_packet = pkt.size - current_segment_bytes_consumed_;
-        size_t to_offer = std::min(input_len, bytes_remaining_in_packet);
-
-        if (to_offer == 0) {
-            state.result = OGG_NEED_MORE_DATA;
-            return state;
-        }
-
-        state.packet.data = input;
-        state.packet.length = to_offer;
-        state.packet.granule_position = granule_position_;
-        state.packet.is_bos = current_packet_is_bos_;
-        state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
-        state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
-
-        // Auto-advance: accumulate CRC, update segment tracking
-        if (enable_crc_) {
-            incremental_crc_ = calculate_crc32(input, to_offer, incremental_crc_);
-        }
-        page_body_bytes_consumed_ += to_offer;
-        advance_through_segments(to_offer);
-        current_packet_is_bos_ = false;
-
-        state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
-        state.bytes_consumed = to_offer;
-
-        // Finalize page if fully consumed
-        if (page_body_bytes_consumed_ >= total_body) {
-            OggDemuxResult page_result = finalize_page();
-            if (page_result != OGG_OK) {
-                state.result = page_result;
-                return state;
-            }
-        }
-
-        state.result = OGG_OK;
+        offer_body_data(input, input_len, 0, state);
         return state;
     }
 
     state.result = OGG_NEED_MORE_DATA;
     return state;
+}
+
+void OggDemuxer::offer_body_data(const uint8_t* body, size_t body_len, size_t header_bytes,
+                                 OggDemuxState& state) {
+    size_t total_body = page_body_size_;
+    size_t remaining_body = total_body - page_body_bytes_consumed_;
+
+    // Fully consumed page: transition back to header parsing
+    if (remaining_body == 0) {
+        OggDemuxResult page_result = finalize_page();
+        state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
+        return;
+    }
+
+    // Skip past any zero-length packets at the current position. These contribute
+    // no body bytes, so remaining_body stays non-zero.
+    while (current_segment_index_ < current_page_.segment_count &&
+           segment_table_[current_segment_index_] == 0) {
+        current_segment_index_++;
+        current_segment_bytes_consumed_ = 0;
+    }
+
+    // Cap at packet boundary so we don't bleed into the next packet
+    PacketInfo pkt = scan_for_next_packet(current_segment_index_);
+    size_t bytes_remaining_in_packet = pkt.size - current_segment_bytes_consumed_;
+    size_t to_offer = std::min(body_len, bytes_remaining_in_packet);
+
+    if (to_offer == 0) {
+        state.result = OGG_NEED_MORE_DATA;
+        return;
+    }
+
+    state.packet.data = body;
+    state.packet.length = to_offer;
+    state.packet.granule_position = granule_position_;
+    state.packet.is_bos = current_packet_is_bos_;
+    state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
+    state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
+
+    // Auto-advance: accumulate CRC, update segment tracking
+    if (enable_crc_) {
+        incremental_crc_ = calculate_crc32(body, to_offer, incremental_crc_);
+    }
+    page_body_bytes_consumed_ += to_offer;
+    advance_through_segments(to_offer);
+    current_packet_is_bos_ = false;
+
+    state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
+    state.bytes_consumed = header_bytes + to_offer;
+
+    // Finalize page if fully consumed
+    if (page_body_bytes_consumed_ >= total_body) {
+        OggDemuxResult page_result = finalize_page();
+        if (page_result != OGG_OK) {
+            state.result = page_result;
+            return;
+        }
+    }
+
+    state.result = OGG_OK;
 }
 
 // ==============================================================================

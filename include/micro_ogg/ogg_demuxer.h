@@ -362,6 +362,13 @@ private:
     InternalResult handle_zero_copy_path(const uint8_t* input, size_t input_len,
                                          OggDemuxState& state);
 
+    // Offer raw body bytes (streaming mode) as a zero-copy pointer capped at the
+    // packet boundary, advancing segment tracking, CRC, and page finalization.
+    // header_bytes is added to bytes_consumed when the body follows a header
+    // parsed in the same call.
+    void offer_body_data(const uint8_t* body, size_t body_len, size_t header_bytes,
+                         OggDemuxState& state);
+
     // Return assembled packet from internal_buffer_ with state updates
     void return_assembled_packet(size_t bytes_consumed, OggDemuxState& state);
 
