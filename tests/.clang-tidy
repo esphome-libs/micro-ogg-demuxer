@@ -1,0 +1,5 @@
+# Test-code overrides: keep the project checks but allow literal fixture
+# values (packet sizes, byte offsets, granule positions) without named constants.
+InheritParentConfig: true
+Checks: >
+  -readability-magic-numbers

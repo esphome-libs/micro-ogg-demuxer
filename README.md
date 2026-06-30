@@ -334,6 +334,24 @@ As a reference point: with a 4 KB input buffer and Ogg Opus audio, approximately
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
+## Testing
+
+The test suite lives in `tests/` as a standalone CMake project (it is not built by the top-level `CMakeLists.txt`). It uses no third-party test framework. Most fixtures are Ogg pages constructed programmatically so the RFC 3533 framing cases can be exercised precisely: 255-byte lacing runs, packets spanning pages and buffers, zero-length packets, oversized-packet skipping, zero-copy versus buffered returns, and the stream-validation error codes. One real `oggenc`-produced file provides an end-to-end check against an independent encoder.
+
+```bash
+cmake -B tests/build -DENABLE_SANITIZERS=ON -DENABLE_WERROR=ON tests
+cmake --build tests/build
+ctest --test-dir tests/build --output-on-failure
+```
+
+Run a single case directly (the binary takes the data directory and an optional test name):
+
+```bash
+tests/build/test_ogg_demuxer tests/data packet_spanning_two_pages
+```
+
+The real fixture is committed; regenerate it with `tests/generate_test_data.sh` (requires `ffmpeg` and `oggenc`) only when the fixture set needs to change.
+
 ## Contributing
 
 Contributions welcome! Please ensure:

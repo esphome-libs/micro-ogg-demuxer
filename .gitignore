@@ -10,6 +10,9 @@ cmake-build-*/
 *.swo
 *~
 
+# clangd cache
+.cache/
+
 # CMake
 CMakeCache.txt
 CMakeFiles/
