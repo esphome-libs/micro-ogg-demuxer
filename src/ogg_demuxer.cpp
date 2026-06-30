@@ -1022,12 +1022,15 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
         bos_flag_used_ = true;
     }
 
-    // Check for zero-copy opportunity (only in packet mode, not when assembling a continued packet)
+    // Check for zero-copy opportunity. This is skipped while a packet is being assembled or
+    // skipped: on a continued page the first segments belong to that in-progress packet, so
+    // returning them as a standalone packet would be incorrect.
     size_t bytes_from_input_for_header = (staged_bytes == 0) ? header_size : bytes_added_to_staging;
     size_t remaining_in_input =
         (bytes_from_input_for_header < input_len) ? (input_len - bytes_from_input_for_header) : 0;
 
-    if (attempt_packet_zero_copy && remaining_in_input > 0 && !assembling_packet_) {
+    if (attempt_packet_zero_copy && remaining_in_input > 0 && !assembling_packet_ &&
+        !skipping_packet_) {
         PacketInfo first_packet = scan_for_next_packet(0);
         if (first_packet.complete && remaining_in_input >= first_packet.size) {
             const uint8_t* body_start = input + bytes_from_input_for_header;
