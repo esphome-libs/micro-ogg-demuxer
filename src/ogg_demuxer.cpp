@@ -427,19 +427,23 @@ OggDemuxResult OggDemuxer::validate_page_crc() const {
     return OGG_OK;
 }
 
-void OggDemuxer::stage_header_and_seed_crc(const uint8_t* header_data, size_t header_size) {
+void OggDemuxer::seed_page_crc(const uint8_t* header_data, size_t header_size) {
+    if (!enable_crc_) {
+        return;
+    }
+
+    // The CRC is computed over the full header in page_header_staging_. The
+    // segment table is already there; copy the rest of the header if it is not.
     if (page_header_staging_size_ == 0) {
         std::memcpy(page_header_staging_, header_data, header_size);
     }
 
-    if (enable_crc_) {
-        // The checksum field is zeroed for the computation, then restored
-        uint8_t saved_crc[4];
-        std::memcpy(saved_crc, page_header_staging_ + OGG_CHECKSUM_OFFSET, 4);
-        std::memset(page_header_staging_ + OGG_CHECKSUM_OFFSET, 0, 4);
-        incremental_crc_ = calculate_crc32(page_header_staging_, header_size, 0);
-        std::memcpy(page_header_staging_ + OGG_CHECKSUM_OFFSET, saved_crc, 4);
-    }
+    // The checksum field is zeroed for the computation, then restored
+    uint8_t saved_crc[4];
+    std::memcpy(saved_crc, page_header_staging_ + OGG_CHECKSUM_OFFSET, 4);
+    std::memset(page_header_staging_ + OGG_CHECKSUM_OFFSET, 0, 4);
+    incremental_crc_ = calculate_crc32(page_header_staging_, header_size, 0);
+    std::memcpy(page_header_staging_ + OGG_CHECKSUM_OFFSET, saved_crc, 4);
 }
 
 bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
@@ -929,7 +933,7 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
 
     // Handle empty page
     if (current_page_.segment_count == 0) {
-        stage_header_and_seed_crc(header_data, header_size);
+        seed_page_crc(header_data, header_size);
 
         if (enable_crc_ && validate_page_crc() != OGG_OK) {
             state.result = OGG_CRC_FAILED;
@@ -944,7 +948,7 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
     }
 
     // Non-empty page: initialize for packet extraction
-    stage_header_and_seed_crc(header_data, header_size);
+    seed_page_crc(header_data, header_size);
 
     current_segment_index_ = 0;
     current_segment_bytes_consumed_ = 0;
