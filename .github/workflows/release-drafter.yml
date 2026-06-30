@@ -7,9 +7,8 @@ on:
 
 # Release automation routes every repo operation (release-drafter, checkout, and the version-bump
 # push) through the GitHub App token generated below, so the default GITHUB_TOKEN is unused here.
-# Keep it read-only to minimize blast radius.
-permissions:
-  contents: read
+# Grant it no permissions at all. GitHub always mints the token; the empty set just strips its powers.
+permissions: {}
 
 jobs:
   release-drafter:
