@@ -5,9 +5,11 @@ on:
     branches:
       - main
 
+# Release automation routes every repo operation (release-drafter, checkout, and the version-bump
+# push) through the GitHub App token generated below, so the default GITHUB_TOKEN is unused here.
+# Keep it read-only to minimize blast radius.
 permissions:
-  contents: write
-  pull-requests: read
+  contents: read
 
 jobs:
   release-drafter:
