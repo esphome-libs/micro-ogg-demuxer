@@ -116,7 +116,8 @@ static DriveResult drive_packets(OggDemuxer& d, const std::vector<uint8_t>& stre
             cp.is_bos = st.packet.is_bos;
             cp.is_eos = st.packet.is_eos;
             cp.is_last_on_page = st.packet.is_last_on_page;
-            cp.zero_copy = (st.packet.data >= ptr && st.packet.data < ptr + win);
+            cp.zero_copy =
+                (st.packet.data >= ptr && st.packet.data + st.packet.length <= ptr + win);
             r.saw_bos = r.saw_bos || cp.is_bos;
             r.saw_eos = r.saw_eos || cp.is_eos;
             r.packets.push_back(std::move(cp));
@@ -164,8 +165,11 @@ static DriveResult drive_data(OggDemuxer& d, const std::vector<uint8_t>& stream,
 
         if (st.result == OGG_OK) {
             const uint8_t* body = st.packet.data;
+            // A packet may arrive over several chunks; it is zero-copy only if every
+            // chunk's full slice lay inside the offered window.
+            const bool in_window = (body >= ptr && body + st.packet.length <= ptr + win);
+            cur.zero_copy = cur.data.empty() ? in_window : (cur.zero_copy && in_window);
             cur.data.insert(cur.data.end(), body, body + st.packet.length);
-            cur.zero_copy = (body >= ptr && body < ptr + win);
             r.saw_bos = r.saw_bos || st.packet.is_bos;
             r.saw_eos = r.saw_eos || st.packet.is_eos;
             if (st.packet.is_end_of_packet) {

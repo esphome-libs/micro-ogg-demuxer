@@ -16,6 +16,7 @@
 
 #include <micro_ogg/ogg_demuxer.h>
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -126,6 +127,11 @@ void append_bytes(std::vector<uint8_t>& dst, const std::vector<uint8_t>& src) {
 
 std::vector<uint8_t> spanning_packet_stream(uint32_t seed, size_t total,
                                             std::vector<uint8_t>& expected_body) {
+    // A packet that spans two pages needs at least 256 bytes: page one carries a
+    // prefix that is a multiple of 255 (so it continues) and page two the rest.
+    // Below that, total - first underflows.
+    assert(total > 255 && "spanning_packet_stream requires total > 255");
+
     expected_body = make_pattern(seed, total);
 
     // Split the packet so the first page holds a whole number of 255-byte

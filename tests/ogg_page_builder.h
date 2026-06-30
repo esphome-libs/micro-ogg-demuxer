@@ -58,6 +58,8 @@ void append_bytes(std::vector<uint8_t>& dst, const std::vector<uint8_t>& src);
 // boundary. The first page (BOS) holds a multiple-of-255 prefix so its last
 // lacing value is 255; the second page (CONTINUED | EOS) completes the packet.
 // `expected_body` receives the full packet payload for comparison.
+// `total` must be greater than 255, since a spanning packet needs a 255-byte
+// (or larger) prefix on the first page plus a remainder on the second.
 std::vector<uint8_t> spanning_packet_stream(uint32_t seed, size_t total,
                                             std::vector<uint8_t>& expected_body);
 
