@@ -603,6 +603,35 @@ static bool test_streaming_no_heap_allocation() {
     return true;
 }
 
+// Streaming mode skips zero-length packets at the start of, between, and at the
+// end of a page, reconstructing only the non-empty packets. Driven at several
+// chunk sizes so both get_next_data body-offering paths run: a single window
+// that carries the header and body together, and body-only windows that arrive
+// after the header was consumed.
+static bool test_streaming_zero_length_packets() {
+    std::vector<uint8_t> a = make_pattern(1, 20);
+    std::vector<uint8_t> c = make_pattern(2, 20);
+    std::vector<uint8_t> empty;
+    std::vector<uint8_t> stream = page_with_packets({empty, a, empty, c, empty}, 1, 0, 0,
+                                                    OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+    for (size_t chunk : {SIZE_MAX, static_cast<size_t>(1), static_cast<size_t>(5),
+                         static_cast<size_t>(13), static_cast<size_t>(64)}) {
+        OggDemuxer d;
+        DriveResult r = drive_data(d, stream, chunk);
+
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == c);
+        CHECK(r.packets[1].is_last_on_page);
+        CHECK(r.saw_bos);
+        CHECK(r.saw_eos);
+    }
+    return true;
+}
+
 // ============================================================================
 // Tests: zero-copy accounting
 // ============================================================================
@@ -1100,6 +1129,7 @@ static const TestCase TESTS[] = {
     {"streaming_mode_basic", test_streaming_mode_basic},
     {"streaming_matches_packet_mode", test_streaming_matches_packet_mode},
     {"streaming_no_heap_allocation", test_streaming_no_heap_allocation},
+    {"streaming_zero_length_packets", test_streaming_zero_length_packets},
     {"zero_copy_vs_buffered", test_zero_copy_vs_buffered},
     {"oversized_packet_skipped", test_oversized_packet_skipped},
     {"oversized_spanning_packet_skipped", test_oversized_spanning_packet_skipped},

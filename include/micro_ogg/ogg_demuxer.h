@@ -340,6 +340,10 @@ private:
     // Compare incremental CRC against stored page checksum
     OggDemuxResult validate_page_crc() const;
 
+    // Seed incremental_crc_ over the header with the checksum field zeroed. Does
+    // nothing when CRC is disabled. Stages the full header first if needed.
+    void seed_page_crc(const uint8_t* header_data, size_t header_size);
+
     // Lazily allocate internal_buffer_ on first use
     bool ensure_buffers_allocated(OggDemuxState& state);
 
@@ -358,11 +362,22 @@ private:
     InternalResult handle_zero_copy_path(const uint8_t* input, size_t input_len,
                                          OggDemuxState& state);
 
+    // Offer raw body bytes (streaming mode) as a zero-copy pointer capped at the
+    // packet boundary, advancing segment tracking, CRC, and page finalization.
+    // header_bytes is added to bytes_consumed when the body follows a header
+    // parsed in the same call.
+    void offer_body_data(const uint8_t* body, size_t body_len, size_t header_bytes,
+                         OggDemuxState& state);
+
     // Return assembled packet from internal_buffer_ with state updates
     void return_assembled_packet(size_t bytes_consumed, OggDemuxState& state);
 
     // Check if current segment position is at a packet boundary
     bool is_at_packet_boundary() const;
+
+    // Check if the current page's last segment has lacing value 255, meaning a
+    // packet continues onto the next page
+    bool current_page_ends_with_continued_packet() const;
 
     // Validate CRC and transition to STATE_EXPECT_PAGE_HEADER when page is consumed
     OggDemuxResult finalize_page();

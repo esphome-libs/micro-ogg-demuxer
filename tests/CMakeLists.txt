@@ -59,6 +59,7 @@ set(DEMUXER_TESTS
     streaming_mode_basic
     streaming_matches_packet_mode
     streaming_no_heap_allocation
+    streaming_zero_length_packets
     zero_copy_vs_buffered
     oversized_packet_skipped
     oversized_spanning_packet_skipped
