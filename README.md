@@ -137,7 +137,8 @@ Result codes returned by demuxer methods:
 | `OGG_STREAM_BOS_ERROR` | -5 | BOS flag violation |
 | `OGG_STREAM_EOS_ERROR` | -6 | EOS flag violation |
 | `OGG_STREAM_SERIAL_MISMATCH` | -7 | New stream (call reset() to continue) |
-| `OGG_ALLOCATION_FAILED` | -8 | Memory allocation failed |
+| `OGG_STREAM_CONTINUATION_ERROR` | -8 | Continued flag inconsistent with previous page |
+| `OGG_ALLOCATION_FAILED` | -9 | Memory allocation failed |
 
 ### OggPacket
 
