@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   pre-commit:
     name: Pre-commit checks
@@ -45,3 +48,18 @@ jobs:
 
       - name: Build
         run: cmake --build build
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure unit tests with sanitizers
+        run: cmake -B tests/build -DENABLE_SANITIZERS=ON -DENABLE_WERROR=ON tests
+
+      - name: Build unit tests
+        run: cmake --build tests/build
+
+      - name: Run unit tests
+        run: ctest --test-dir tests/build --output-on-failure
