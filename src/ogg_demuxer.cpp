@@ -26,10 +26,9 @@
 namespace micro_ogg {
 
 // Ogg container constants (RFC 3533)
-constexpr size_t OGG_PAGE_HEADER_SIZE = 27;       // Fixed header before segment table
-constexpr size_t OGG_SEGMENT_COUNT_OFFSET = 26;   // Offset to segment_count field
-constexpr size_t OGG_MAX_HEADER_SIZE = 282;       // 27 + 255 segment table entries
-constexpr size_t OGG_MAX_PAGE_BODY_SIZE = 65025;  // 255 segments × 255 bytes
+constexpr size_t OGG_PAGE_HEADER_SIZE = 27;      // Fixed header before segment table
+constexpr size_t OGG_SEGMENT_COUNT_OFFSET = 26;  // Offset to segment_count field
+constexpr size_t OGG_MAX_HEADER_SIZE = 282;      // 27 + 255 segment table entries
 constexpr uint64_t OGG_INVALID_GRANULE_POSITION = 0xFFFFFFFFFFFFFFFFULL;
 constexpr uint8_t OGG_MAX_LACING_VALUE = 255;  // Lacing value indicating packet continues
 
@@ -916,13 +915,8 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
                     current_page_.segment_count);
     }
 
-    // Cache and validate page body size
+    // Cache page body size; bounded to 65025 (255 x 255) by the uint8_t segment table
     page_body_size_ = calculate_body_size(segment_table_, current_page_.segment_count);
-    size_t total_page_body_size = page_body_size_;
-    if (total_page_body_size > OGG_MAX_PAGE_BODY_SIZE) {
-        state.result = OGG_STREAM_SEQUENCE_ERROR;
-        return InternalResult::PACKET_READY;
-    }
 
     granule_position_ = current_page_.granule_position;
 
