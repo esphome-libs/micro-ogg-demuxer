@@ -371,19 +371,7 @@ void OggDemuxer::offer_body_data(const uint8_t* body, size_t body_len, size_t he
     }
     page_body_bytes_consumed_ += to_offer;
     advance_through_segments(to_offer);
-
-    // A packet whose size is an exact multiple of 255 is framed with a trailing
-    // zero-length lacing terminator. advance_through_segments() moves by byte
-    // count, so it stops on that terminator without stepping over it, leaving the
-    // cursor mid-frame. Step past it (matching the assembly and zero-copy paths)
-    // so the cursor rests at the true packet boundary and between_packets() reads
-    // the terminator, not the preceding 255, when deciding on a mode switch.
-    if (state.packet.is_end_of_packet && current_segment_index_ < current_page_.segment_count &&
-        segment_table_[current_segment_index_] == 0) {
-        current_segment_index_++;
-        current_segment_bytes_consumed_ = 0;
-    }
-
+    step_past_packet_terminator();
     current_packet_is_bos_ = false;
 
     state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
@@ -565,6 +553,11 @@ void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
 
     // Check if packet skip complete
     if (bytes_to_skip_ == 0) {
+        // Step past the packet's zero-length terminator (255-multiple packets) so
+        // the is_last check and any later mode switch see the true packet boundary
+        // rather than the trailing 255 the byte-count advance stopped on.
+        step_past_packet_terminator();
+
         // Check if we're at the end of the current page
         bool is_last = (current_segment_index_ >= current_page_.segment_count);
 
@@ -888,12 +881,7 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
 
     // Check if packet complete
     if (is_at_packet_boundary()) {
-        // Advance past any zero-length terminator segment
-        if (current_segment_index_ < current_page_.segment_count &&
-            segment_table_[current_segment_index_] == 0) {
-            current_segment_index_++;
-            current_segment_bytes_consumed_ = 0;
-        }
+        step_past_packet_terminator();
         return_assembled_packet(to_consume, state);
         return;
     }
@@ -1115,6 +1103,25 @@ void OggDemuxer::advance_through_segments(size_t bytes_to_advance) {
             current_segment_index_++;
             current_segment_bytes_consumed_ = 0;
         }
+    }
+}
+
+void OggDemuxer::step_past_packet_terminator() {
+    // A packet whose size is an exact multiple of 255 is framed as a run of 255
+    // lacing values terminated by a single 0. That 0 marks the end of the packet;
+    // it carries no bytes, so a byte-count advance stops on it rather than stepping
+    // past, stranding the cursor mid-frame. Move onto the next packet so boundary
+    // queries (between_packets(), scan_for_next_packet(), the is_last checks) read
+    // the true boundary instead of the trailing 255.
+    //
+    // The preceding 255 is what makes this 0 a terminator: a 0 at the start of the
+    // page, or one following a lacing value below 255, is a genuine zero-length
+    // packet and is deliberately left in place to be surfaced on its own.
+    if (current_segment_index_ > 0 && current_segment_index_ < current_page_.segment_count &&
+        segment_table_[current_segment_index_] == 0 &&
+        segment_table_[current_segment_index_ - 1] == OGG_MAX_LACING_VALUE) {
+        current_segment_index_++;
+        current_segment_bytes_consumed_ = 0;
     }
 }
 
