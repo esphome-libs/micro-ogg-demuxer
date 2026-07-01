@@ -162,20 +162,20 @@ void OggDemuxer::reset() {
     state_ = STATE_EXPECT_PAGE_HEADER;
     page_header_staging_size_ = 0;
     current_segment_index_ = 0;
-    current_segment_bytes_consumed_ = 0;
     page_body_bytes_consumed_ = 0;
     page_body_size_ = 0;
     packet_assembly_size_ = 0;
     assembling_packet_ = false;
     skipping_packet_ = false;
-    bytes_to_skip_ = 0;
+    current_span_ = PacketInfo{};
+    span_remaining_ = 0;
+    span_active_ = false;
     previous_page_ended_with_continued_packet_ = false;
     granule_position_ = 0;
     stream_serial_ = 0;
     expected_page_sequence_ = 0;
     stream_initialized_ = false;
     current_packet_is_bos_ = false;
-    current_packet_is_eos_ = false;
     bos_flag_used_ = false;
     incremental_crc_ = 0;
     active_mode_ = ConsumptionMode::UNSET;
@@ -229,41 +229,34 @@ OggDemuxState OggDemuxer::get_next_packet(const uint8_t* input, size_t input_len
     state.packet.is_last_on_page = false;
     state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
 
-    while (true) {
-        // ======================================================================
-        // PHASE A: PAGE HEADER PARSING
-        // ======================================================================
-        if (state_ == STATE_EXPECT_PAGE_HEADER || state_ == STATE_ACCUMULATING_PAGE_HEADER) {
-            InternalResult result = handle_page_header(input, input_len, state);
-            if (result != InternalResult::OK) {
-                return state;  // NEED_MORE_DATA or PACKET_READY (including errors)
-            }
-            // InternalResult::OK means we transitioned to STATE_PROCESSING_SEGMENTS
-            // but need more data, so return
-            return state;
-        }
-
-        // ======================================================================
-        // PHASE B: PACKET EXTRACTION
-        // ======================================================================
-        if (state_ == STATE_PROCESSING_SEGMENTS) {
-            // ===== Case 0: Skipping Packet (Too Large to Buffer) =====
-            if (skipping_packet_) {
-                handle_skipping_packet(input, input_len, state);
-                return state;
-            }
-
-            // ===== Case 1: Assembling Packet (Greedy Buffering) =====
-            if (assembling_packet_) {
-                handle_assembling_packet(input, input_len, state);
-                return state;
-            }
-
-            // ===== Case 2: Zero-Copy Mode =====
-            handle_zero_copy_path(input, input_len, state);
-            return state;
-        }
+    // ==========================================================================
+    // PHASE A: PAGE HEADER PARSING
+    // ==========================================================================
+    if (state_ == STATE_EXPECT_PAGE_HEADER || state_ == STATE_ACCUMULATING_PAGE_HEADER) {
+        // Either a packet was returned (zero-copy fast path), an error was set,
+        // or the header was consumed and the body arrives on the next call.
+        handle_page_header(input, input_len, state);
+        return state;
     }
+
+    // ==========================================================================
+    // PHASE B: PACKET EXTRACTION (STATE_PROCESSING_SEGMENTS)
+    // ==========================================================================
+    // ===== Case 0: Skipping Packet (Too Large to Buffer) =====
+    if (skipping_packet_) {
+        handle_skipping_packet(input, input_len, state);
+        return state;
+    }
+
+    // ===== Case 1: Assembling Packet (Greedy Buffering) =====
+    if (assembling_packet_) {
+        handle_assembling_packet(input, input_len, state);
+        return state;
+    }
+
+    // ===== Case 2: Zero-Copy Mode =====
+    handle_zero_copy_path(input, input_len, state);
+    return state;
 }
 
 // ==============================================================================
@@ -330,61 +323,57 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
 
 void OggDemuxer::offer_body_data(const uint8_t* body, size_t body_len, size_t header_bytes,
                                  OggDemuxState& state) {
-    size_t total_body = page_body_size_;
+    // No span in flight: rest the cursor on the next packet's span. Zero-size
+    // spans are resolved here rather than offered: a zero-size span at the start
+    // of a continuation page is the terminator of the packet continued from the
+    // previous page (its total size is a multiple of 255), reported as a
+    // zero-length end-of-packet so the boundary is not lost; any other zero-size
+    // span is a genuine zero-length packet, which carries no body bytes in
+    // streaming mode and is stepped over silently.
+    if (!span_active_) {
+        while (current_segment_index_ < current_page_.segment_count) {
+            begin_packet_span();
+            if (span_remaining_ > 0) {
+                break;
+            }
+            if (current_segment_index_ == 0 && previous_page_ended_with_continued_packet_) {
+                close_packet_span();
 
-    // A packet continued from the previous page can terminate at the very start of
-    // this page with a zero-length lacing value (its total size is a multiple of
-    // 255). The terminator carries no body bytes, so report a zero-length
-    // end-of-packet to close the continued packet and step past it; otherwise the
-    // boundary is lost and the continued packet merges with the next one.
-    if (page_body_bytes_consumed_ == 0 && current_segment_index_ == 0 &&
-        previous_page_ended_with_continued_packet_ && current_page_.segment_count > 0 &&
-        segment_table_[0] == 0) {
-        current_segment_index_++;
+                state.packet.data = body;
+                state.packet.length = 0;
+                state.packet.granule_position = granule_position_;
+                state.packet.is_bos = current_packet_is_bos_;
+                state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
+                state.packet.is_end_of_packet = true;
+                state.packet.is_last_on_page =
+                    (current_segment_index_ >= current_page_.segment_count);
+                state.bytes_consumed = header_bytes;
+                current_packet_is_bos_ = false;
 
-        state.packet.data = body;
-        state.packet.length = 0;
-        state.packet.granule_position = granule_position_;
-        state.packet.is_bos = current_packet_is_bos_;
-        state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
-        state.packet.is_end_of_packet = true;
-        state.packet.is_last_on_page = (current_segment_index_ >= current_page_.segment_count);
-        state.bytes_consumed = header_bytes;
-        current_packet_is_bos_ = false;
-
-        // If the terminator was the only segment, the page is now fully consumed.
-        if (current_segment_index_ >= current_page_.segment_count) {
-            OggDemuxResult page_result = finalize_page();
-            if (page_result != OGG_OK) {
-                state.result = page_result;
+                // If the terminator was the only segment, the page is now fully consumed.
+                if (current_segment_index_ >= current_page_.segment_count) {
+                    OggDemuxResult page_result = finalize_page();
+                    if (page_result != OGG_OK) {
+                        state.result = page_result;
+                        return;
+                    }
+                }
+                state.result = OGG_OK;
                 return;
             }
+            close_packet_span();  // genuine zero-length packet
         }
-        state.result = OGG_OK;
-        return;
+
+        // Fully consumed page: transition back to header parsing
+        if (current_segment_index_ >= current_page_.segment_count) {
+            OggDemuxResult page_result = finalize_page();
+            state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
+            return;
+        }
     }
 
-    size_t remaining_body = total_body - page_body_bytes_consumed_;
-
-    // Fully consumed page: transition back to header parsing
-    if (remaining_body == 0) {
-        OggDemuxResult page_result = finalize_page();
-        state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
-        return;
-    }
-
-    // Skip past any zero-length packets at the current position. These contribute
-    // no body bytes, so remaining_body stays non-zero.
-    while (current_segment_index_ < current_page_.segment_count &&
-           segment_table_[current_segment_index_] == 0) {
-        current_segment_index_++;
-        current_segment_bytes_consumed_ = 0;
-    }
-
-    // Cap at packet boundary so we don't bleed into the next packet
-    PacketInfo pkt = scan_for_next_packet(current_segment_index_);
-    size_t bytes_remaining_in_packet = pkt.size - current_segment_bytes_consumed_;
-    size_t to_offer = std::min(body_len, bytes_remaining_in_packet);
+    // Cap at the span (packet boundary) so we don't bleed into the next packet
+    size_t to_offer = std::min(body_len, span_remaining_);
 
     if (to_offer == 0) {
         state.result = OGG_NEED_MORE_DATA;
@@ -396,22 +385,26 @@ void OggDemuxer::offer_body_data(const uint8_t* body, size_t body_len, size_t he
     state.packet.granule_position = granule_position_;
     state.packet.is_bos = current_packet_is_bos_;
     state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
-    state.packet.is_end_of_packet = pkt.complete && (to_offer >= bytes_remaining_in_packet);
+    state.packet.is_end_of_packet = current_span_.complete && (to_offer == span_remaining_);
 
-    // Auto-advance: accumulate CRC, update segment tracking
+    // Auto-advance: accumulate CRC, update span tracking
     if (enable_crc_) {
         incremental_crc_ = calculate_crc32(body, to_offer, incremental_crc_);
     }
     page_body_bytes_consumed_ += to_offer;
-    advance_through_segments(to_offer);
-    step_past_packet_terminator();
+    span_remaining_ -= to_offer;
+    if (span_remaining_ == 0) {
+        close_packet_span();
+    } else {
+        span_active_ = true;
+    }
     current_packet_is_bos_ = false;
 
-    state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);
+    state.packet.is_last_on_page = (page_body_bytes_consumed_ >= page_body_size_);
     state.bytes_consumed = header_bytes + to_offer;
 
     // Finalize page if fully consumed
-    if (page_body_bytes_consumed_ >= total_body) {
+    if (page_body_bytes_consumed_ >= page_body_size_) {
         OggDemuxResult page_result = finalize_page();
         if (page_result != OGG_OK) {
             state.result = page_result;
@@ -509,8 +502,9 @@ bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
 }
 
 bool OggDemuxer::between_packets() const {
-    // A packet is partially processed while assembling or skipping.
-    if (assembling_packet_ || skipping_packet_) {
+    // A packet is partially consumed while assembling, skipping, or while a
+    // streaming span is open.
+    if (assembling_packet_ || skipping_packet_ || span_active_) {
         return false;
     }
 
@@ -519,16 +513,13 @@ bool OggDemuxer::between_packets() const {
         return !previous_page_ended_with_continued_packet_;
     }
 
-    // Within a page, a boundary sits only at the first byte of a packet.
-    if (current_segment_bytes_consumed_ != 0) {
-        return false;  // partway through a segment
-    }
+    // Within a page the cursor always rests at the start of the next packet's
+    // span. That is a boundary unless the page opens with a continuation whose
+    // closing span has not been consumed yet (cursor still at segment 0).
     if (current_segment_index_ == 0) {
-        // Start of the page: a boundary unless this page opens with a continuation.
         return !previous_page_ended_with_continued_packet_;
     }
-    // The previous segment terminates a packet iff its lacing value is < 255.
-    return segment_table_[current_segment_index_ - 1] < OGG_MAX_LACING_VALUE;
+    return true;
 }
 
 bool OggDemuxer::enforce_mode(ConsumptionMode requested, OggDemuxState& state) {
@@ -545,115 +536,58 @@ bool OggDemuxer::enforce_mode(ConsumptionMode requested, OggDemuxState& state) {
 
 void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
                                         OggDemuxState& state) {
-    // If bytes_to_skip_ is 0, we're continuing a skip from a previous page
-    // Calculate how many bytes to skip on this page
-    if (bytes_to_skip_ == 0) {
-        // Scan segment table to find packet boundary on this page
-        size_t bytes_on_this_page = 0;
-
-        for (uint8_t i = current_segment_index_; i < current_page_.segment_count; i++) {
-            bytes_on_this_page += segment_table_[i];
-            if (segment_table_[i] < OGG_MAX_LACING_VALUE) {
-                // Packet boundary found
-                break;
-            }
-        }
-
-        // Subtract bytes already consumed from the current segment so the skip
-        // count reflects only the packet bytes still remaining on this page.
-        bytes_to_skip_ = bytes_on_this_page - current_segment_bytes_consumed_;
+    // No span in flight: the skip is resuming on a new page. Open the span of
+    // the packet's bytes on this page. A zero-size span (the packet's
+    // zero-length terminator leading the page) completes the skip immediately.
+    if (!span_active_) {
+        begin_packet_span();
+        span_active_ = true;
     }
 
-    // Skip bytes without buffering until packet is complete
-    size_t to_skip = std::min(input_len, bytes_to_skip_);
+    // Skip bytes without buffering until the span is consumed
+    size_t to_skip = std::min(input_len, span_remaining_);
 
-    // bytes_to_skip_ == 0 here means the packet completes with no bytes left on
-    // this page: a continued packet terminated by a zero-length lacing value at
-    // the start of the page. Fall through so the completion logic below steps past
-    // that terminator. Only wait for more data when bytes still remain to skip.
-    if (to_skip == 0 && bytes_to_skip_ != 0) {
+    if (to_skip > 0) {
+        span_remaining_ -= to_skip;
+        page_body_bytes_consumed_ += to_skip;
+        state.bytes_consumed = to_skip;
+
+        // Update CRC (we still need to validate the page)
+        if (enable_crc_) {
+            incremental_crc_ = calculate_crc32(input, to_skip, incremental_crc_);
+        }
+    }
+
+    if (span_remaining_ > 0) {
         state.result = OGG_NEED_MORE_DATA;
         return;
     }
 
-    bytes_to_skip_ -= to_skip;
-    page_body_bytes_consumed_ += to_skip;
-    state.bytes_consumed = to_skip;
+    // The packet's bytes on this page are consumed
+    close_packet_span();
 
-    // Update CRC (we still need to validate the page)
-    if (enable_crc_) {
-        incremental_crc_ = calculate_crc32(input, to_skip, incremental_crc_);
-    }
-
-    // Advance through segments
-    advance_through_segments(to_skip);
-
-    // Check if packet skip complete
-    if (bytes_to_skip_ == 0) {
-        // Step past the packet's zero-length terminator (255-multiple packets) so
-        // the is_last check and any later mode switch see the true packet boundary
-        // rather than the trailing 255 the byte-count advance stopped on.
-        step_past_packet_terminator();
-
-        // Check if we're at the end of the current page
-        bool is_last = (current_segment_index_ >= current_page_.segment_count);
-
-        // If page complete, check if packet continues to next page
-        if (is_last) {
-            bool continues_to_next_page = current_page_ends_with_continued_packet();
-
-            if (continues_to_next_page) {
-                // Packet continues to next page - we need to keep skipping
-                // Validate CRC for current page
-                if (enable_crc_ && validate_page_crc() != OGG_OK) {
-                    state.result = OGG_CRC_FAILED;
-                    return;
-                }
-
-                previous_page_ended_with_continued_packet_ = true;
-                state_ = STATE_EXPECT_PAGE_HEADER;
-                // Keep skipping_packet_ = true
-                // Don't return yet - need more data to continue skipping
-
-                state.result = OGG_NEED_MORE_DATA;
-                return;
-            }
-
-            // Packet complete - exit skip mode
-            skipping_packet_ = false;
-
-            if (enable_crc_ && validate_page_crc() != OGG_OK) {
-                state.result = OGG_CRC_FAILED;
-                return;
-            }
-
-            previous_page_ended_with_continued_packet_ = false;
-            state_ = STATE_EXPECT_PAGE_HEADER;
-
-            // Set output parameter for skipped packet
-            state.packet.is_last_on_page = true;
-
-            state.result = OGG_PACKET_SKIPPED;
-            return;
-        }
-
-        // Packet ends mid-page - exit skip mode
-        skipping_packet_ = false;
-
-        // Set output parameter for skipped packet
-        state.packet.is_last_on_page = false;
-
-        state.result = OGG_PACKET_SKIPPED;
+    if (!current_span_.complete) {
+        // Packet continues onto the next page: finalize this page, keep skipping
+        OggDemuxResult page_result = finalize_page();
+        state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
         return;
     }
 
-    // bytes_to_skip_ is still non-zero here, so the page body cannot be fully
-    // consumed: every site that sets bytes_to_skip_ keeps it <= the bytes
-    // remaining in the current page body, so any skip that empties the page also
-    // drives bytes_to_skip_ to zero (handled above). Mode-switch enforcement
-    // prevents get_next_data() from advancing the segment cursor mid-skip, which
-    // is the only way that invariant could otherwise be broken.
-    state.result = OGG_NEED_MORE_DATA;
+    // Packet complete - exit skip mode
+    skipping_packet_ = false;
+
+    bool is_last = (current_segment_index_ >= current_page_.segment_count);
+    if (is_last) {
+        OggDemuxResult page_result = finalize_page();
+        if (page_result != OGG_OK) {
+            state.result = page_result;
+            return;
+        }
+    }
+
+    // Set output parameter for skipped packet
+    state.packet.is_last_on_page = is_last;
+    state.result = OGG_PACKET_SKIPPED;
 }
 
 void OggDemuxer::return_assembled_packet(size_t bytes_consumed, OggDemuxState& state) {
@@ -680,35 +614,17 @@ void OggDemuxer::return_assembled_packet(size_t bytes_consumed, OggDemuxState& s
 
     // Check if page complete
     if (is_last) {
-        if (enable_crc_ && validate_page_crc() != OGG_OK) {
-            state.result = OGG_CRC_FAILED;
+        OggDemuxResult page_result = finalize_page();
+        if (page_result != OGG_OK) {
+            state.result = page_result;
             return;
         }
         if (current_page_.header_type & OGG_END_OF_STREAM) {
             state.packet.is_eos = true;
         }
-        previous_page_ended_with_continued_packet_ = false;
-        state_ = STATE_EXPECT_PAGE_HEADER;
     }
 
     state.result = OGG_OK;
-}
-
-bool OggDemuxer::is_at_packet_boundary() const {
-    // Check if CURRENT segment ends the packet (with bounds check)
-    if (current_segment_index_ < current_page_.segment_count &&
-        segment_table_[current_segment_index_] < OGG_MAX_LACING_VALUE &&
-        segment_table_[current_segment_index_] == current_segment_bytes_consumed_) {
-        return true;
-    }
-    // Check if PREVIOUS segment ended the packet
-    if (current_segment_bytes_consumed_ == 0 && current_segment_index_ > 0) {
-        size_t prev_idx = current_segment_index_ - 1;
-        if (segment_table_[prev_idx] < OGG_MAX_LACING_VALUE) {
-            return true;
-        }
-    }
-    return false;
 }
 
 bool OggDemuxer::current_page_ends_with_continued_packet() const {
@@ -827,71 +743,27 @@ bool OggDemuxer::validate_stream_consistency(OggDemuxState& state) {
 
 void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len,
                                           OggDemuxState& state) {
-    size_t remaining_page_body = page_body_size_ - page_body_bytes_consumed_;
-
-    // Calculate bytes to packet end, accounting for partially consumed current segment
-    size_t bytes_to_packet_end = 0;
-    bool packet_boundary_found = false;
-
-    // Start with remaining bytes in current segment
-    size_t remaining_in_current_seg =
-        segment_table_[current_segment_index_] - current_segment_bytes_consumed_;
-    bytes_to_packet_end = remaining_in_current_seg;
-
-    // Check if current segment ends the packet
-    if (segment_table_[current_segment_index_] < OGG_MAX_LACING_VALUE) {
-        packet_boundary_found = true;
-    } else {
-        // Scan forward from NEXT segment to find packet end
-        for (uint8_t i = current_segment_index_ + 1; i < current_page_.segment_count; i++) {
-            bytes_to_packet_end += segment_table_[i];
-            if (segment_table_[i] < OGG_MAX_LACING_VALUE) {
-                packet_boundary_found = true;
-                break;
-            }
-        }
+    // No span in flight: the assembly is resuming on a new page. Open the span
+    // of the packet's bytes on this page.
+    if (!span_active_) {
+        begin_packet_span();
+        span_active_ = true;
     }
 
-    // Determine how much to consume
-    size_t to_consume = packet_boundary_found ? std::min(input_len, bytes_to_packet_end)
-                                              : std::min(input_len, remaining_page_body);
+    // A zero-size span means the packet ends with no more body bytes: its
+    // zero-length lacing terminator leads this page (the packet size is a
+    // multiple of 255). Flush the assembled packet before any page bookkeeping;
+    // on a terminator-only page, finalizing first would merge this packet with
+    // the next one.
+    if (span_remaining_ == 0) {
+        close_packet_span();
+        return_assembled_packet(0, state);
+        return;
+    }
 
+    size_t to_consume = std::min(input_len, span_remaining_);
     if (to_consume == 0) {
-        // A zero-length terminator completes the in-flight packet: flush it. This
-        // must run before the page-fully-consumed check below, because a
-        // continuation page whose body is only the terminator (page_body_size_ ==
-        // 0) satisfies both, and finalizing without flushing would merge this
-        // packet with the next one.
-        if (is_at_packet_boundary()) {
-            // Advance past the zero-length terminator segment
-            if (current_segment_index_ < current_page_.segment_count &&
-                segment_table_[current_segment_index_] == current_segment_bytes_consumed_) {
-                current_segment_index_++;
-                current_segment_bytes_consumed_ = 0;
-            }
-            return_assembled_packet(0, state);
-            return;
-        }
-
-        // No terminator here and nothing to consume: wait for the next window/page.
-        if (input_len == 0) {
-            state.result = OGG_NEED_MORE_DATA;
-            return;
-        }
-
-        // Page body fully consumed with the packet still continuing onto the next
-        // page: finalize this page and keep assembling.
-        if (page_body_bytes_consumed_ >= page_body_size_) {
-            OggDemuxResult page_result = finalize_page();
-            if (page_result != OGG_OK) {
-                state.result = page_result;
-                return;
-            }
-            state.result = OGG_NEED_MORE_DATA;
-            return;
-        }
-
-        state.result = OGG_STREAM_SEQUENCE_ERROR;
+        state.result = OGG_NEED_MORE_DATA;
         return;
     }
 
@@ -899,7 +771,8 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
     GrowBufferResult grow_result = grow_buffer(packet_assembly_size_ + to_consume);
     if (grow_result != GROW_OK) {
         if (grow_result == GROW_EXCEEDS_MAX) {
-            bytes_to_skip_ = bytes_to_packet_end;
+            // Too large to buffer: discard what was assembled and skip the rest
+            // of the span (and any continuation) without copying.
             skipping_packet_ = true;
             assembling_packet_ = false;
             packet_assembly_size_ = 0;
@@ -914,31 +787,29 @@ void OggDemuxer::handle_assembling_packet(const uint8_t* input, size_t input_len
     std::memcpy(internal_buffer_ + packet_assembly_size_, input, to_consume);
     packet_assembly_size_ += to_consume;
     page_body_bytes_consumed_ += to_consume;
+    span_remaining_ -= to_consume;
     state.bytes_consumed = to_consume;
 
     if (enable_crc_) {
         incremental_crc_ = calculate_crc32(input, to_consume, incremental_crc_);
     }
 
-    advance_through_segments(to_consume);
+    if (span_remaining_ > 0) {
+        state.result = OGG_NEED_MORE_DATA;
+        return;
+    }
 
-    // Check if packet complete
-    if (is_at_packet_boundary()) {
-        step_past_packet_terminator();
+    close_packet_span();
+
+    // Packet complete on this page: flush it
+    if (current_span_.complete) {
         return_assembled_packet(to_consume, state);
         return;
     }
 
-    // Check if page body fully consumed
-    if (page_body_bytes_consumed_ >= page_body_size_) {
-        OggDemuxResult page_result = finalize_page();
-        if (page_result != OGG_OK) {
-            state.result = page_result;
-            return;
-        }
-    }
-
-    state.result = OGG_NEED_MORE_DATA;
+    // Packet continues onto the next page: finalize this page, keep assembling
+    OggDemuxResult page_result = finalize_page();
+    state.result = (page_result == OGG_OK) ? OGG_NEED_MORE_DATA : page_result;
 }
 
 OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, size_t input_len,
@@ -1017,12 +888,13 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
         return InternalResult::NEED_MORE_DATA;
     }
 
-    // Non-empty page: initialize for packet extraction
+    // Non-empty page: initialize for packet extraction. Spans are per-page and
+    // open lazily in the consumption paths, so none is active yet.
     seed_page_crc(header_data, header_size);
 
     current_segment_index_ = 0;
-    current_segment_bytes_consumed_ = 0;
     page_body_bytes_consumed_ = 0;
+    span_active_ = false;
 
     current_packet_is_bos_ =
         ((current_page_.header_type & OGG_BEGINNING_OF_STREAM) != 0) && !bos_flag_used_;
@@ -1055,70 +927,29 @@ OggDemuxer::InternalResult OggDemuxer::handle_page_header(const uint8_t* input, 
     return InternalResult::OK;
 }
 
-OggDemuxer::InternalResult OggDemuxer::handle_zero_copy_path(const uint8_t* input, size_t input_len,
-                                                             OggDemuxState& state) {
-    size_t remaining_page_body = page_body_size_ - page_body_bytes_consumed_;
-
+void OggDemuxer::handle_zero_copy_path(const uint8_t* input, size_t input_len,
+                                       OggDemuxState& state) {
     // Scan segment table to find next packet size
     PacketInfo next_packet = scan_for_next_packet(current_segment_index_);
 
     // Check if we have enough data and packet is complete
-    if (input_len >= next_packet.size && next_packet.complete) {
+    if (next_packet.complete && input_len >= next_packet.size) {
         // Zero-copy return!
         handle_zero_copy_return(input, next_packet, 0, state);
-        return InternalResult::PACKET_READY;
+        return;
     }
 
-    // Not enough data OR packet spans pages - switch to assembly mode
-    size_t to_buffer = std::min(input_len, remaining_page_body);
-
-    if (to_buffer > 0) {
-        // Ensure buffer can hold data
-        GrowBufferResult grow_result = grow_buffer(to_buffer);
-        if (grow_result != GROW_OK) {
-            if (grow_result == GROW_EXCEEDS_MAX) {
-                // Packet too large to buffer - enter skip mode
-                // If packet is incomplete, we need to calculate total size from segments
-                bytes_to_skip_ = next_packet.size;
-                skipping_packet_ = true;
-                assembling_packet_ = false;  // Not assembling anymore
-                packet_assembly_size_ = 0;   // Clear any assembly state
-
-                // Handle skipping in skip mode
-                handle_skipping_packet(input, input_len, state);
-                return InternalResult::PACKET_READY;  // state has the result
-            }
-            state.result = OGG_ALLOCATION_FAILED;
-            return InternalResult::PACKET_READY;
-        }
-
-        // Copy to buffer
-        std::memcpy(internal_buffer_, input, to_buffer);
-        packet_assembly_size_ = to_buffer;
-        assembling_packet_ = true;
-        page_body_bytes_consumed_ += to_buffer;
-        state.bytes_consumed = to_buffer;
-
-        // Update CRC
-        if (enable_crc_) {
-            incremental_crc_ = calculate_crc32(input, to_buffer, incremental_crc_);
-        }
-
-        // Advance through segments
-        advance_through_segments(to_buffer);
-
-        // Check if page body fully consumed
-        if (page_body_bytes_consumed_ >= page_body_size_) {
-            OggDemuxResult page_result = finalize_page();
-            if (page_result != OGG_OK) {
-                state.result = page_result;
-                return InternalResult::PACKET_READY;
-            }
-        }
+    if (input_len == 0) {
+        state.result = OGG_NEED_MORE_DATA;
+        return;
     }
 
-    state.result = OGG_NEED_MORE_DATA;
-    return InternalResult::NEED_MORE_DATA;
+    // Packet spans the input window or the page: open its span and assemble it.
+    current_span_ = next_packet;
+    span_remaining_ = next_packet.size;
+    span_active_ = true;
+    assembling_packet_ = true;
+    handle_assembling_packet(input, input_len, state);
 }
 
 // ==============================================================================
@@ -1133,47 +964,17 @@ size_t OggDemuxer::calculate_body_size(const uint8_t* segment_table, uint8_t seg
     return total;
 }
 
-void OggDemuxer::advance_through_segments(size_t bytes_to_advance) {
-    while (bytes_to_advance > 0 && current_segment_index_ < current_page_.segment_count) {
-        size_t remaining_in_segment =
-            segment_table_[current_segment_index_] - current_segment_bytes_consumed_;
-        size_t consume_from_segment = std::min(bytes_to_advance, remaining_in_segment);
-
-        current_segment_bytes_consumed_ += consume_from_segment;
-        bytes_to_advance -= consume_from_segment;
-
-        if (current_segment_bytes_consumed_ >= segment_table_[current_segment_index_]) {
-            current_segment_index_++;
-            current_segment_bytes_consumed_ = 0;
-        }
-    }
+void OggDemuxer::begin_packet_span() {
+    current_span_ = scan_for_next_packet(current_segment_index_);
+    span_remaining_ = current_span_.size;
 }
 
-void OggDemuxer::step_past_packet_terminator() {
-    // A packet whose size is an exact multiple of 255 is framed as a run of 255
-    // lacing values terminated by a single 0. That 0 marks the end of the packet;
-    // it carries no bytes, so a byte-count advance stops on it rather than stepping
-    // past, stranding the cursor mid-frame. Move onto the next packet so boundary
-    // queries (between_packets(), scan_for_next_packet(), the is_last checks) read
-    // the true boundary instead of the trailing 255.
-    if (current_segment_index_ >= current_page_.segment_count ||
-        segment_table_[current_segment_index_] != 0) {
-        return;
-    }
-
-    // A preceding 255 is what makes this 0 a terminator rather than a genuine
-    // zero-length packet. Within the page that is the prior segment; at the start
-    // of a continuation page it is the previous page's trailing 255, recorded in
-    // previous_page_ended_with_continued_packet_. A 0 not preceded by a 255 is a
-    // real empty packet and is left in place to be surfaced on its own.
-    const bool preceded_by_255 =
-        current_segment_index_ > 0
-            ? segment_table_[current_segment_index_ - 1] == OGG_MAX_LACING_VALUE
-            : previous_page_ended_with_continued_packet_;
-    if (preceded_by_255) {
-        current_segment_index_++;
-        current_segment_bytes_consumed_ = 0;
-    }
+void OggDemuxer::close_packet_span() {
+    // The span's segment count includes any trailing zero-length lacing
+    // terminator (packet size a multiple of 255), so the cursor lands on the
+    // next packet's first segment -- never mid-frame on a consumed terminator.
+    current_segment_index_ += current_span_.segment_count;
+    span_active_ = false;
 }
 
 OggDemuxer::PacketInfo OggDemuxer::scan_for_next_packet(uint8_t start_segment_index) const {
@@ -1208,7 +1009,6 @@ void OggDemuxer::handle_zero_copy_return(const uint8_t* packet_ptr, const Packet
 
     // Update segment tracking
     current_segment_index_ += packet_info.segment_count;
-    current_segment_bytes_consumed_ = 0;
     page_body_bytes_consumed_ += packet_info.size;
 
     // Update CRC
@@ -1228,15 +1028,14 @@ void OggDemuxer::handle_zero_copy_return(const uint8_t* packet_ptr, const Packet
 
     // Check if page complete
     if (is_last) {
-        if (enable_crc_ && validate_page_crc() != OGG_OK) {
-            state.result = OGG_CRC_FAILED;
+        OggDemuxResult page_result = finalize_page();
+        if (page_result != OGG_OK) {
+            state.result = page_result;
             return;
         }
         if (current_page_.header_type & OGG_END_OF_STREAM) {
             state.packet.is_eos = true;
         }
-        previous_page_ended_with_continued_packet_ = false;
-        state_ = STATE_EXPECT_PAGE_HEADER;
     } else {
         state_ = STATE_PROCESSING_SEGMENTS;
     }

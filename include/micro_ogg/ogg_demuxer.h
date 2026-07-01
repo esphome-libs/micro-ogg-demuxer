@@ -336,15 +336,17 @@ private:
     // Grow internal buffer to accommodate needed_size bytes
     GrowBufferResult grow_buffer(size_t needed_size);
 
-    // Advance segment tracking by specified number of bytes
-    void advance_through_segments(size_t bytes_to_advance);
+    // Compute the span of the packet starting at the segment cursor into
+    // current_span_/span_remaining_. The span covers the packet's bytes on this
+    // page, whether it completes here, and every segment it occupies -- including
+    // a trailing zero-length lacing terminator (present when the packet size is
+    // an exact multiple of 255). Callers set span_active_ once consumption of the
+    // span actually begins.
+    void begin_packet_span();
 
-    // After a packet's bytes are fully consumed, step the segment cursor past the
-    // packet's trailing zero-length lacing terminator (present when the packet
-    // size is an exact multiple of 255) so it rests on the next packet. A genuine
-    // zero-length packet is left in place, distinguished by a preceding lacing
-    // value below 255.
-    void step_past_packet_terminator();
+    // Deactivate the span and jump the segment cursor past all of its segments,
+    // so the cursor rests at the start of the next packet (or the page end).
+    void close_packet_span();
 
     // Scan segment table from start_segment_index to find next packet boundary
     PacketInfo scan_for_next_packet(uint8_t start_segment_index) const;
@@ -375,8 +377,7 @@ private:
     void handle_assembling_packet(const uint8_t* input, size_t input_len, OggDemuxState& state);
 
     // Attempt zero-copy return, fall back to assembly mode if not possible
-    InternalResult handle_zero_copy_path(const uint8_t* input, size_t input_len,
-                                         OggDemuxState& state);
+    void handle_zero_copy_path(const uint8_t* input, size_t input_len, OggDemuxState& state);
 
     // Offer raw body bytes (streaming mode) as a zero-copy pointer capped at the
     // packet boundary, advancing segment tracking, CRC, and page finalization.
@@ -387,9 +388,6 @@ private:
 
     // Return assembled packet from internal_buffer_ with state updates
     void return_assembled_packet(size_t bytes_consumed, OggDemuxState& state);
-
-    // Check if current segment position is at a packet boundary
-    bool is_at_packet_boundary() const;
 
     // Check if the current page's last segment has lacing value 255, meaning a
     // packet continues onto the next page
@@ -433,14 +431,13 @@ private:
 
     // 8-byte aligned: size_t
     size_t page_header_staging_size_{0};
-    size_t internal_buffer_capacity_{0};        // Current allocated buffer size
-    size_t min_buffer_size_{0};                 // Minimum/initial buffer size
-    size_t max_buffer_size_{0};                 // Maximum buffer size limit
-    size_t current_segment_bytes_consumed_{0};  // Bytes consumed from current segment
-    size_t page_body_bytes_consumed_{0};        // Total bytes consumed from current page body
-    size_t page_body_size_{0};                  // Total page body size (cached from segment table)
-    size_t packet_assembly_size_{0};            // Size of packet being assembled
-    size_t bytes_to_skip_{0};                   // Remaining bytes to skip in current packet
+    size_t internal_buffer_capacity_{0};  // Current allocated buffer size
+    size_t min_buffer_size_{0};           // Minimum/initial buffer size
+    size_t max_buffer_size_{0};           // Maximum buffer size limit
+    size_t page_body_bytes_consumed_{0};  // Total bytes consumed from current page body
+    size_t page_body_size_{0};            // Total page body size (cached from segment table)
+    size_t packet_assembly_size_{0};      // Size of packet being assembled
+    size_t span_remaining_{0};            // Unconsumed bytes of the current packet span
 
     // 8-byte aligned: uint64_t
     uint64_t granule_position_{0};  // Page-level granule position
@@ -448,6 +445,7 @@ private:
     // Structs (contain mixed sizes, place after 8-byte types)
     OggPageHeader current_page_{};
     OggDemuxerConfig config_;
+    PacketInfo current_span_{};  // Span of the packet at the segment cursor (see begin_packet_span)
 
     // 4-byte aligned: uint32_t
     uint32_t stream_serial_{0};
@@ -458,13 +456,13 @@ private:
     State state_{STATE_EXPECT_PAGE_HEADER};
     ConsumptionMode active_mode_{
         ConsumptionMode::UNSET};        // Active consumption method (mode-switch guard)
-    uint8_t current_segment_index_{0};  // Current segment being processed
+    uint8_t current_segment_index_{0};  // Segment where the current/next packet span starts
+    bool span_active_{false};           // True while the current span is partially consumed
     bool assembling_packet_{false};     // True if currently assembling a packet
     bool skipping_packet_{false};       // True if skipping a packet that's too large to buffer
     bool previous_page_ended_with_continued_packet_{false};  // RFC 3533 tracking
     bool stream_initialized_{false};
     bool current_packet_is_bos_{false};
-    bool current_packet_is_eos_{false};
     bool bos_flag_used_{false};  // BOS flag only applies to first packet
     bool enable_crc_{false};     // Enable/disable CRC validation
 
