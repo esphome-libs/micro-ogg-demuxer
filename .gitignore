@@ -30,5 +30,17 @@ Makefile
 # Test executables
 test/test_buffer_growth
 
+# Fuzzer outputs (harness, scripts, dict, README, and seed_gen stay tracked)
+tests/fuzz/build-libfuzzer/
+tests/fuzz/build-standalone/
+tests/fuzz/build-seeds/
+tests/fuzz/build-cov/
+tests/fuzz/corpus_ogg/
+tests/fuzz/seeds_ogg/
+tests/fuzz/cov-html/
+tests/fuzz/cov.prof*
+tests/fuzz/fuzz-*.log
+crash-*
+
 # macOS
 .DS_Store
