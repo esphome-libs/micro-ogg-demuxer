@@ -206,7 +206,7 @@ while (have_data) {
 
 `get_next_packet()` and `get_next_data()` share demuxer state and may be mixed, but only at a packet boundary. For example, stream a large comment/artwork packet with `get_next_data()` to inspect it without buffering, then decode the following audio packets with `get_next_packet()`.
 
-A boundary is reached after `get_next_packet()` returns a packet (`OGG_OK` or `OGG_PACKET_SKIPPED`), or after `get_next_data()` returns a chunk with `is_end_of_packet == true`. Switching methods anywhere else returns `OGG_INVALID_MODE_SWITCH` and consumes no input, so the caller can continue in the original mode. Single-mode use never triggers this. `reset()` clears the active mode.
+A boundary is reached after `get_next_packet()` returns a packet (`OGG_OK` or `OGG_PACKET_SKIPPED`), or after `get_next_data()` returns a chunk with `is_end_of_packet == true`. A mid-packet switch returns `OGG_INVALID_MODE_SWITCH` and consumes no input, so the caller can continue in the original mode. Single-mode use never triggers this. `reset()` clears the active mode.
 
 #### `reset()`
 
