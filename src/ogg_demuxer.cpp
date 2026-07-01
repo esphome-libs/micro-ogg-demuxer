@@ -178,6 +178,7 @@ void OggDemuxer::reset() {
     current_packet_is_eos_ = false;
     bos_flag_used_ = false;
     incremental_crc_ = 0;
+    active_mode_ = ConsumptionMode::UNSET;
 #ifdef MICRO_OGG_DEMUXER_DEBUG
     zero_copy_packets_ = 0;
     buffered_packets_ = 0;
@@ -208,6 +209,11 @@ OggDemuxState OggDemuxer::get_next_packet(const uint8_t* input, size_t input_len
         state.packet.is_eos = false;
         state.packet.is_last_on_page = false;
         state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+        return state;
+    }
+
+    // Reject interleaving with get_next_data() unless at a packet boundary
+    if (!enforce_mode(ConsumptionMode::PACKET, state)) {
         return state;
     }
 
@@ -275,6 +281,11 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
         state.packet.is_eos = false;
         state.packet.is_last_on_page = false;
         state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+        return state;
+    }
+
+    // Reject interleaving with get_next_packet() unless at a packet boundary
+    if (!enforce_mode(ConsumptionMode::DATA, state)) {
         return state;
     }
 
@@ -463,6 +474,41 @@ bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
     return true;
 }
 
+bool OggDemuxer::between_packets() const {
+    // A packet is partially processed while assembling or skipping.
+    if (assembling_packet_ || skipping_packet_) {
+        return false;
+    }
+
+    // Between pages: a boundary unless a packet continues onto the next page.
+    if (state_ != STATE_PROCESSING_SEGMENTS) {
+        return !previous_page_ended_with_continued_packet_;
+    }
+
+    // Within a page, a boundary sits only at the first byte of a packet.
+    if (current_segment_bytes_consumed_ != 0) {
+        return false;  // partway through a segment
+    }
+    if (current_segment_index_ == 0) {
+        // Start of the page: a boundary unless this page opens with a continuation.
+        return !previous_page_ended_with_continued_packet_;
+    }
+    // The previous segment terminates a packet iff its lacing value is < 255.
+    return segment_table_[current_segment_index_ - 1] < OGG_MAX_LACING_VALUE;
+}
+
+bool OggDemuxer::enforce_mode(ConsumptionMode requested, OggDemuxState& state) {
+    if (active_mode_ != ConsumptionMode::UNSET && active_mode_ != requested && !between_packets()) {
+        state.result = OGG_INVALID_MODE_SWITCH;
+        state.bytes_consumed = 0;
+        state.packet.length = 0;
+        state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+        return false;
+    }
+    active_mode_ = requested;
+    return true;
+}
+
 void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
                                         OggDemuxState& state) {
     // If bytes_to_skip_ is 0, we're continuing a skip from a previous page
@@ -479,7 +525,9 @@ void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
             }
         }
 
-        bytes_to_skip_ = bytes_on_this_page;
+        // Subtract bytes already consumed from the current segment so the skip
+        // count reflects only the packet bytes still remaining on this page.
+        bytes_to_skip_ = bytes_on_this_page - current_segment_bytes_consumed_;
     }
 
     // Skip bytes without buffering until packet is complete
@@ -556,26 +604,12 @@ void OggDemuxer::handle_skipping_packet(const uint8_t* input, size_t input_len,
         return;
     }
 
-    // Check if page body fully consumed
-    if (page_body_bytes_consumed_ >= page_body_size_) {
-        if (enable_crc_ && validate_page_crc() != OGG_OK) {
-            state.result = OGG_CRC_FAILED;
-            return;
-        }
-
-        previous_page_ended_with_continued_packet_ = current_page_ends_with_continued_packet();
-
-        // RFC 3533: Set page boundary output for validation tracking
-        state.packet.is_last_on_page = true;
-        state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
-        state.packet.is_bos = current_packet_is_bos_;
-        current_packet_is_bos_ = false;  // BOS only applies to first packet
-        state.packet.is_eos = (current_page_.header_type & OGG_END_OF_STREAM) != 0;
-
-        state_ = STATE_EXPECT_PAGE_HEADER;
-        // Keep skipping_packet_ = true and bytes_to_skip_
-    }
-
+    // bytes_to_skip_ is still non-zero here, so the page body cannot be fully
+    // consumed: every site that sets bytes_to_skip_ keeps it <= the bytes
+    // remaining in the current page body, so any skip that empties the page also
+    // drives bytes_to_skip_ to zero (handled above). Mode-switch enforcement
+    // prevents get_next_data() from advancing the segment cursor mid-skip, which
+    // is the only way that invariant could otherwise be broken.
     state.result = OGG_NEED_MORE_DATA;
 }
 

@@ -139,6 +139,7 @@ Result codes returned by demuxer methods:
 | `OGG_STREAM_SERIAL_MISMATCH` | -7 | New stream (call reset() to continue) |
 | `OGG_STREAM_CONTINUATION_ERROR` | -8 | Continued flag inconsistent with previous page |
 | `OGG_ALLOCATION_FAILED` | -9 | Memory allocation failed |
+| `OGG_INVALID_MODE_SWITCH` | -10 | Switched between `get_next_packet()` and `get_next_data()` mid-packet |
 
 ### OggPacket
 
@@ -183,7 +184,7 @@ Streaming mode that skips full packet assembly and internal buffering entirely. 
 No heap allocation is performed — only the inline header staging buffer (282 bytes) is used. No internal packet buffer is needed.
 
 - `bytes_consumed` includes both header and body bytes; advance the input pointer by this amount.
-- `is_end_of_packet` is true when the offered data reaches a packet boundary, making it safe to switch to `get_next_packet()`.
+- `is_end_of_packet` is true when the offered data reaches a packet boundary. See [Switching Between Modes](#switching-between-modes).
 
 ```cpp
 micro_ogg::OggDemuxer demuxer;
@@ -200,6 +201,12 @@ while (have_data) {
     len -= state.bytes_consumed;
 }
 ```
+
+#### Switching Between Modes
+
+`get_next_packet()` and `get_next_data()` share demuxer state and may be mixed, but only at a packet boundary. For example, stream a large comment/artwork packet with `get_next_data()` to inspect it without buffering, then decode the following audio packets with `get_next_packet()`.
+
+A boundary is reached after `get_next_packet()` returns a packet (`OGG_OK` or `OGG_PACKET_SKIPPED`), or after `get_next_data()` returns a chunk with `is_end_of_packet == true`. A mid-packet switch returns `OGG_INVALID_MODE_SWITCH` and consumes no input, so the caller can continue in the original mode. Single-mode use never triggers this. `reset()` clears the active mode.
 
 #### `reset()`
 

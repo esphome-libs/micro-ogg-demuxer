@@ -70,7 +70,10 @@ enum OggDemuxResult : int8_t {
     OGG_STREAM_CONTINUATION_ERROR = -8,  // Continued flag inconsistent with previous page
 
     // Resource errors
-    OGG_ALLOCATION_FAILED = -9  // Memory allocation failed
+    OGG_ALLOCATION_FAILED = -9,  // Memory allocation failed
+
+    // API usage errors
+    OGG_INVALID_MODE_SWITCH = -10  // Switched between get_next_packet()/get_next_data() mid-packet
 };
 
 /**
@@ -315,6 +318,14 @@ private:
         PACKET_READY     // Packet is ready to return
     };
 
+    // Which public consumption method is currently driving the stream. Used to
+    // reject interleaving get_next_packet()/get_next_data() mid-packet.
+    enum class ConsumptionMode : uint8_t {
+        UNSET,   // No packet/data call since construction or reset()
+        PACKET,  // get_next_packet()
+        DATA     // get_next_data()
+    };
+
     // Parse Ogg page header from raw bytes
     OggDemuxResult parse_page_header(const uint8_t* data, size_t data_len, OggPageHeader& header,
                                      size_t& header_size);
@@ -387,6 +398,15 @@ private:
     // Validate BOS/EOS flags, serial number, and page sequence per RFC 3533
     bool validate_stream_consistency(OggDemuxState& state);
 
+    // True when no packet is partially consumed, so the caller may safely switch
+    // between get_next_packet() and get_next_data().
+    bool between_packets() const;
+
+    // Enforce that get_next_packet()/get_next_data() are not interleaved
+    // mid-packet. Records the active mode and, on an illegal mid-packet switch,
+    // sets state.result to OGG_INVALID_MODE_SWITCH and returns false.
+    bool enforce_mode(ConsumptionMode requested, OggDemuxState& state);
+
     // Demuxer state
     enum State : uint8_t {
         STATE_EXPECT_PAGE_HEADER,        // Waiting for page header
@@ -429,6 +449,8 @@ private:
 
     // 1-byte aligned: uint8_t and bool (grouped to minimize padding)
     State state_{STATE_EXPECT_PAGE_HEADER};
+    ConsumptionMode active_mode_{
+        ConsumptionMode::UNSET};        // Active consumption method (mode-switch guard)
     uint8_t current_segment_index_{0};  // Current segment being processed
     bool assembling_packet_{false};     // True if currently assembling a packet
     bool skipping_packet_{false};       // True if skipping a packet that's too large to buffer
