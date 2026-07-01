@@ -398,9 +398,7 @@ OggDemuxResult OggDemuxer::parse_page_header(const uint8_t* data, size_t data_le
         return OGG_INVALID_VERSION;
     }
 
-    // Parse header fields
-    std::memcpy(header.capture_pattern, data, 4);
-    header.version = data[4];
+    // Parse header fields (capture pattern and version are already validated above)
     header.header_type = data[5];
     header.granule_position = read_le64(data + OGG_GRANULE_OFFSET);
     header.stream_serial = read_le32(data + OGG_SERIAL_OFFSET);

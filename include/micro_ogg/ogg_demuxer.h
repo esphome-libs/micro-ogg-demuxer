@@ -30,14 +30,12 @@ namespace micro_ogg {
  * @brief Ogg page header structure (per RFC 3533)
  */
 struct OggPageHeader {
-    uint8_t capture_pattern[4];  // "OggS"
-    uint8_t version;             // Stream structure version (0x00)
-    uint8_t header_type;         // Bitfield (continuation, bos, eos)
-    uint64_t granule_position;   // Codec-specific position info
-    uint32_t stream_serial;      // Logical bitstream serial number
-    uint32_t page_sequence;      // Page sequence number
-    uint32_t checksum;           // CRC checksum
-    uint8_t segment_count;       // Number of segments in page
+    uint8_t header_type;        // Bitfield (continuation, bos, eos)
+    uint64_t granule_position;  // Codec-specific position info
+    uint32_t stream_serial;     // Logical bitstream serial number
+    uint32_t page_sequence;     // Page sequence number
+    uint32_t checksum;          // CRC checksum
+    uint8_t segment_count;      // Number of segments in page
 };
 
 /**
