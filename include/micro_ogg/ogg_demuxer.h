@@ -73,7 +73,8 @@ enum OggDemuxResult : int8_t {
     OGG_ALLOCATION_FAILED = -9,  // Memory allocation failed
 
     // API usage errors
-    OGG_INVALID_MODE_SWITCH = -10  // Switched between get_next_packet()/get_next_data() mid-packet
+    OGG_INVALID_MODE_SWITCH = -10,  // Switched between get_next_packet()/get_next_data() mid-packet
+    OGG_INVALID_INPUT = -11         // Null input pointer with a non-zero input_len
 };
 
 /**

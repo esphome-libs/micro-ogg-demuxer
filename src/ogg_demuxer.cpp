@@ -202,7 +202,7 @@ OggDemuxState OggDemuxer::get_next_packet(const uint8_t* input, size_t input_len
 
     // Validate input parameters
     if (input_len > 0 && !input) {
-        state.result = OGG_INVALID_CAPTURE;  // Use existing error code
+        state.result = OGG_INVALID_INPUT;
         state.bytes_consumed = 0;
         state.packet.length = 0;
         state.packet.is_bos = false;
@@ -267,7 +267,7 @@ OggDemuxState OggDemuxer::get_next_data(const uint8_t* input, size_t input_len) 
     OggDemuxState state{};
 
     if (input_len > 0 && !input) {
-        state.result = OGG_INVALID_CAPTURE;
+        state.result = OGG_INVALID_INPUT;
         state.bytes_consumed = 0;
         state.packet.length = 0;
         state.packet.is_bos = false;

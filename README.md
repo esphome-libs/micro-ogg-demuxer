@@ -140,6 +140,7 @@ Result codes returned by demuxer methods:
 | `OGG_STREAM_CONTINUATION_ERROR` | -8 | Continued flag inconsistent with previous page |
 | `OGG_ALLOCATION_FAILED` | -9 | Memory allocation failed |
 | `OGG_INVALID_MODE_SWITCH` | -10 | Switched between `get_next_packet()` and `get_next_data()` mid-packet |
+| `OGG_INVALID_INPUT` | -11 | Null input pointer with a non-zero length |
 
 ### OggPacket
 
