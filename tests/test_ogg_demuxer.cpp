@@ -1108,6 +1108,123 @@ static bool test_real_ogg_file_end_to_end() {
 }
 
 // ============================================================================
+// Tests: consumption-mode switching (get_next_packet <-> get_next_data)
+// ============================================================================
+
+// The two consumption modes may be interleaved, but only at a packet boundary.
+// This is the metadata-parser pattern: read one packet with get_next_packet(),
+// then stream the next with get_next_data() without buffering it.
+static bool test_mode_switch_at_boundary_allowed() {
+    std::vector<uint8_t> a = make_pattern(1, 30);
+    std::vector<uint8_t> b = make_pattern(2, 40);
+    std::vector<uint8_t> stream =
+        page_with_packets({a, b}, 1, 0, 0, OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+    OggDemuxer d;
+
+    // Packet mode: first packet, zero-copy. Leaves the cursor at a packet
+    // boundary mid-page (the second packet has not started).
+    OggDemuxState s1 = d.get_next_packet(stream.data(), stream.size());
+    CHECK_EQ(s1.result, OGG_OK);
+    CHECK_EQ(s1.packet.length, a.size());
+    CHECK(std::vector<uint8_t>(s1.packet.data, s1.packet.data + s1.packet.length) == a);
+    CHECK(!s1.packet.is_last_on_page);
+
+    // Switch to streaming mode AT the boundary: allowed, returns the second packet.
+    const uint8_t* rest = stream.data() + s1.bytes_consumed;
+    const size_t rest_len = stream.size() - s1.bytes_consumed;
+    OggDemuxState s2 = d.get_next_data(rest, rest_len);
+    CHECK_EQ(s2.result, OGG_OK);
+    CHECK_EQ(s2.packet.length, b.size());
+    CHECK(s2.packet.is_end_of_packet);
+    CHECK(std::vector<uint8_t>(s2.packet.data, s2.packet.data + s2.packet.length) == b);
+    return true;
+}
+
+// Switching modes in the middle of a packet is rejected with
+// OGG_INVALID_MODE_SWITCH and does not mutate state (bytes_consumed == 0).
+static bool test_mode_switch_mid_packet_rejected() {
+    // (a) get_next_data() consumed only part of a packet -> get_next_packet() rejected.
+    {
+        std::vector<uint8_t> p = make_pattern(1, 200);
+        std::vector<uint8_t> stream =
+            page_with_packets({p}, 1, 0, 0, OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+        OggDemuxer d;
+        // Header (27 + one lacing byte) plus 50 of 200 body bytes: mid-packet.
+        OggDemuxState s1 = d.get_next_data(stream.data(), 27 + 1 + 50);
+        CHECK_EQ(s1.result, OGG_OK);
+        CHECK(!s1.packet.is_end_of_packet);
+
+        OggDemuxState s2 = d.get_next_packet(stream.data(), stream.size());
+        CHECK_EQ(s2.result, OGG_INVALID_MODE_SWITCH);
+        CHECK_EQ(s2.bytes_consumed, 0);
+    }
+
+    // (b) get_next_packet() buffering a packet across input windows -> get_next_data() rejected.
+    {
+        std::vector<uint8_t> p = make_pattern(3, 500);
+        std::vector<uint8_t> stream =
+            page_with_packets({p}, 1, 0, 0, OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+        OggDemuxer d;
+        // A header-sized first window parses the header only (no zero-copy return,
+        // since the full packet is not present).
+        OggDemuxState h = d.get_next_packet(stream.data(), 100);
+        CHECK_EQ(h.result, OGG_NEED_MORE_DATA);
+        const size_t off = h.bytes_consumed;
+        // A short body window starts assembly but cannot complete the packet.
+        OggDemuxState s1 = d.get_next_packet(stream.data() + off, 100);
+        CHECK_EQ(s1.result, OGG_NEED_MORE_DATA);
+
+        OggDemuxState s2 = d.get_next_data(stream.data() + off, stream.size() - off);
+        CHECK_EQ(s2.result, OGG_INVALID_MODE_SWITCH);
+        CHECK_EQ(s2.bytes_consumed, 0);
+    }
+    return true;
+}
+
+// A skip that spans a page boundary keeps a packet in flight across the page
+// header. Switching to streaming mode while the skip is pending is rejected,
+// rather than corrupting the skip byte count.
+static bool test_mode_switch_mid_skip_rejected() {
+    OggDemuxerConfig cfg;
+    cfg.min_buffer_size = 1;
+    cfg.max_buffer_size = 1;  // force skip mode for any packet larger than 1 byte
+
+    OggDemuxer d(cfg);
+
+    PageSpec p0;
+    p0.serial = 1;
+    p0.sequence = 0;
+    p0.header_type = OGG_BEGINNING_OF_STREAM;
+    p0.segments = {255};  // last lacing 255: packet continues onto the next page
+    p0.body = make_pattern(1, 255);
+    std::vector<uint8_t> page0 = make_page(p0);
+
+    OggDemuxState s = d.get_next_packet(page0.data(), page0.size());  // parse header
+    CHECK_EQ(s.result, OGG_NEED_MORE_DATA);
+    const size_t off = s.bytes_consumed;
+    s = d.get_next_packet(page0.data() + off, page0.size() - off);  // skip the 255 body bytes
+    CHECK_EQ(s.result, OGG_NEED_MORE_DATA);
+
+    // Page 1 continues (and completes) the skipped packet. A get_next_data() call
+    // while the skip is still in flight must be rejected.
+    PageSpec p1;
+    p1.serial = 1;
+    p1.sequence = 1;
+    p1.header_type = OGG_CONTINUED_PACKET;
+    p1.segments = {255, 10};
+    p1.body = make_pattern(2, 265);
+    std::vector<uint8_t> page1 = make_page(p1);
+
+    OggDemuxState sd = d.get_next_data(page1.data(), page1.size());
+    CHECK_EQ(sd.result, OGG_INVALID_MODE_SWITCH);
+    CHECK_EQ(sd.bytes_consumed, 0);
+    return true;
+}
+
+// ============================================================================
 // Runner
 // ============================================================================
 
@@ -1151,6 +1268,9 @@ static const TestCase TESTS[] = {
     {"reset_reuse", test_reset_reuse},
     {"null_and_empty_input", test_null_and_empty_input},
     {"real_ogg_file_end_to_end", test_real_ogg_file_end_to_end},
+    {"mode_switch_at_boundary_allowed", test_mode_switch_at_boundary_allowed},
+    {"mode_switch_mid_packet_rejected", test_mode_switch_mid_packet_rejected},
+    {"mode_switch_mid_skip_rejected", test_mode_switch_mid_skip_rejected},
 };
 
 int main(int argc, char* argv[]) {
