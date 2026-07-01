@@ -371,6 +371,19 @@ void OggDemuxer::offer_body_data(const uint8_t* body, size_t body_len, size_t he
     }
     page_body_bytes_consumed_ += to_offer;
     advance_through_segments(to_offer);
+
+    // A packet whose size is an exact multiple of 255 is framed with a trailing
+    // zero-length lacing terminator. advance_through_segments() moves by byte
+    // count, so it stops on that terminator without stepping over it, leaving the
+    // cursor mid-frame. Step past it (matching the assembly and zero-copy paths)
+    // so the cursor rests at the true packet boundary and between_packets() reads
+    // the terminator, not the preceding 255, when deciding on a mode switch.
+    if (state.packet.is_end_of_packet && current_segment_index_ < current_page_.segment_count &&
+        segment_table_[current_segment_index_] == 0) {
+        current_segment_index_++;
+        current_segment_bytes_consumed_ = 0;
+    }
+
     current_packet_is_bos_ = false;
 
     state.packet.is_last_on_page = (page_body_bytes_consumed_ >= total_body);

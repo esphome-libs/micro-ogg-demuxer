@@ -1141,6 +1141,39 @@ static bool test_mode_switch_at_boundary_allowed() {
     return true;
 }
 
+// A packet whose size is an exact multiple of 255 is framed with a trailing
+// zero-length lacing terminator (e.g. [255, 0]). After get_next_data() streams
+// such a packet and reports is_end_of_packet, the cursor must rest at the true
+// packet boundary so switching to get_next_packet() is allowed. Regression test:
+// the terminator previously stalled the cursor, misreading the 255 as mid-packet
+// and rejecting the switch with OGG_INVALID_MODE_SWITCH.
+static bool test_mode_switch_after_255_multiple_packet() {
+    // First packet is exactly 255 bytes (lacing 255, 0); it is NOT last on the
+    // page, so the page is not finalized and the cursor sits on the terminator.
+    std::vector<uint8_t> a = make_pattern(4, 255);
+    std::vector<uint8_t> b = make_pattern(5, 40);
+    std::vector<uint8_t> stream =
+        page_with_packets({a, b}, 1, 0, 0, OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+    OggDemuxer d;
+
+    // Stream the first (255-byte) packet; it ends on a packet boundary.
+    OggDemuxState s1 = d.get_next_data(stream.data(), stream.size());
+    CHECK_EQ(s1.result, OGG_OK);
+    CHECK_EQ(s1.packet.length, a.size());
+    CHECK(s1.packet.is_end_of_packet);
+    CHECK(!s1.packet.is_last_on_page);
+
+    // Switch to packet mode at the boundary: must be allowed and return packet b.
+    const uint8_t* rest = stream.data() + s1.bytes_consumed;
+    const size_t rest_len = stream.size() - s1.bytes_consumed;
+    OggDemuxState s2 = d.get_next_packet(rest, rest_len);
+    CHECK_EQ(s2.result, OGG_OK);
+    CHECK_EQ(s2.packet.length, b.size());
+    CHECK(std::vector<uint8_t>(s2.packet.data, s2.packet.data + s2.packet.length) == b);
+    return true;
+}
+
 // Switching modes in the middle of a packet is rejected with
 // OGG_INVALID_MODE_SWITCH, consumes no input, and leaves demuxer state intact:
 // resuming in the original mode still completes the packet with the correct payload.
@@ -1295,6 +1328,7 @@ static const TestCase TESTS[] = {
     {"null_and_empty_input", test_null_and_empty_input},
     {"real_ogg_file_end_to_end", test_real_ogg_file_end_to_end},
     {"mode_switch_at_boundary_allowed", test_mode_switch_at_boundary_allowed},
+    {"mode_switch_after_255_multiple_packet", test_mode_switch_after_255_multiple_packet},
     {"mode_switch_mid_packet_rejected", test_mode_switch_mid_packet_rejected},
     {"mode_switch_mid_skip_rejected", test_mode_switch_mid_skip_rejected},
 };

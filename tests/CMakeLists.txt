@@ -82,6 +82,7 @@ set(DEMUXER_TESTS
     null_and_empty_input
     real_ogg_file_end_to_end
     mode_switch_at_boundary_allowed
+    mode_switch_after_255_multiple_packet
     mode_switch_mid_packet_rejected
     mode_switch_mid_skip_rejected
 )
