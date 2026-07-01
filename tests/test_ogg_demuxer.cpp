@@ -373,6 +373,31 @@ static bool test_zero_length_packet() {
     return true;
 }
 
+// A genuine zero-length packet immediately after a normal packet must still be
+// surfaced when the preceding packet is assembled across input windows. Its 0
+// lacing value looks like a 255-multiple terminator, but is only a terminator
+// when preceded by 255; here the preceding packet is 140 bytes (lacing 140), so
+// the 0 is a real empty packet. Regression: the terminator-skip step used to drop
+// it. Driven with small windows to force packet `a` through the assembly path.
+static bool test_zero_length_packet_after_assembled_packet() {
+    std::vector<uint8_t> a = make_pattern(1, 140);  // lacing 140 (not a 255-multiple)
+    std::vector<uint8_t> empty;                     // lacing 0 -> real empty packet
+    std::vector<uint8_t> c = make_pattern(2, 40);
+    std::vector<uint8_t> stream =
+        page_with_packets({a, empty, c}, 1, 0, 0, OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+    OggDemuxer d;
+    DriveResult r = drive_packets(d, stream, 32);
+
+    CHECK(!r.errored);
+    CHECK(!r.stalled);
+    CHECK_EQ(r.packets.size(), 3);
+    CHECK(r.packets[0].data == a);
+    CHECK_EQ(r.packets[1].data.size(), 0);
+    CHECK(r.packets[2].data == c);
+    return true;
+}
+
 // An empty page (segment_count == 0) between data pages yields no packet and the
 // stream continues.
 static bool test_empty_page_skipped() {
@@ -578,6 +603,154 @@ static bool test_streaming_matches_packet_mode() {
     return true;
 }
 
+// A 255-multiple packet can span pages so that its zero-length terminator lands at
+// the very start of the continuation page; the packet completes there with no
+// further bytes. Regression: skip mode stalled (bytes_to_skip_ == 0 with no input
+// to consume) and streaming merged the packet with the next one, because the
+// page-leading terminator was not recognized as a packet boundary.
+static bool test_255_multiple_terminator_at_page_start() {
+    std::vector<uint8_t> a = make_pattern(1, 510);  // 2 * 255: framed as 255, 255, 0
+    std::vector<uint8_t> b = make_pattern(2, 40);
+
+    std::vector<uint8_t> stream;
+    PageSpec p0;
+    p0.serial = 1;
+    p0.sequence = 0;
+    p0.header_type = OGG_BEGINNING_OF_STREAM;
+    p0.segments = {255, 255};  // both 255s of packet a: continues, terminator deferred
+    p0.body = a;
+    append_bytes(stream, make_page(p0));
+
+    PageSpec p1;
+    p1.serial = 1;
+    p1.sequence = 1;
+    p1.header_type = OGG_CONTINUED_PACKET | OGG_END_OF_STREAM;
+    p1.segments = {0, 40};  // terminator 0 of packet a at page start, then packet b
+    p1.body = b;
+    append_bytes(stream, make_page(p1));
+
+    // CRC on throughout: the page-leading terminator contributes no body bytes, so
+    // the per-page CRC accumulation must still validate across the page boundary.
+    OggDemuxerConfig crc_cfg;
+    crc_cfg.enable_crc = true;
+
+    // Packet mode (reference): two packets.
+    {
+        OggDemuxer d(crc_cfg);
+        DriveResult r = drive_packets(d, stream, SIZE_MAX);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == b);
+    }
+
+    // Streaming mode: same two packets, not merged. Small windows exercise both
+    // the header-then-body and body-only offer paths.
+    {
+        OggDemuxer d(crc_cfg);
+        DriveResult r = drive_data(d, stream, 7);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == b);
+    }
+
+    // Skip mode: packet a is too large to buffer and is skipped, but packet b still
+    // surfaces (no stall on the page-leading terminator).
+    {
+        OggDemuxerConfig cfg;
+        cfg.min_buffer_size = 64;
+        cfg.max_buffer_size = 128;  // 510-byte packet a exceeds this -> skipped
+        cfg.enable_crc = true;
+        OggDemuxer d(cfg);
+        DriveResult r = drive_packets(d, stream, 64);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.skipped, 1);
+        CHECK_EQ(r.packets.size(), 1);
+        CHECK(r.packets[0].data == b);
+    }
+    return true;
+}
+
+// The terminator can also land on a page of its own: a 255-multiple packet ends,
+// its zero-length terminator is the sole segment of the next page (zero body
+// bytes), and a further packet follows on a later page. Regression: in packet mode
+// the empty page was finalized before the in-flight packet was flushed, so the
+// packet was never returned and the next packet's bytes were appended to the stale
+// buffer, yielding one merged, oversized packet.
+static bool test_255_multiple_terminator_only_page() {
+    std::vector<uint8_t> a = make_pattern(1, 255);  // framed as 255 (page 0) then 0 (page 1)
+    std::vector<uint8_t> b = make_pattern(2, 30);
+
+    std::vector<uint8_t> stream;
+    PageSpec p0;
+    p0.serial = 1;
+    p0.sequence = 0;
+    p0.header_type = OGG_BEGINNING_OF_STREAM;
+    p0.segments = {255};  // all 255 bytes of packet a: continues, terminator deferred
+    p0.body = a;
+    append_bytes(stream, make_page(p0));
+
+    PageSpec p1;
+    p1.serial = 1;
+    p1.sequence = 1;
+    p1.header_type = OGG_CONTINUED_PACKET;
+    p1.segments = {0};  // terminator of packet a, alone on the page (zero body bytes)
+    append_bytes(stream, make_page(p1));
+
+    PageSpec p2;
+    p2.serial = 1;
+    p2.sequence = 2;
+    p2.header_type = OGG_END_OF_STREAM;
+    p2.segments = {30};
+    p2.body = b;
+    append_bytes(stream, make_page(p2));
+
+    OggDemuxerConfig crc_cfg;
+    crc_cfg.enable_crc = true;
+
+    // Packet mode: two separate packets, not merged.
+    for (size_t chunk : {SIZE_MAX, static_cast<size_t>(7)}) {
+        OggDemuxer d(crc_cfg);
+        DriveResult r = drive_packets(d, stream, chunk);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == b);
+    }
+
+    // Streaming mode: same two packets.
+    {
+        OggDemuxer d(crc_cfg);
+        DriveResult r = drive_data(d, stream, 7);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == b);
+    }
+
+    // Skip mode: packet a is skipped, packet b still surfaces (no stall).
+    {
+        OggDemuxerConfig cfg;
+        cfg.min_buffer_size = 64;
+        cfg.max_buffer_size = 128;  // 255-byte packet a is skipped
+        cfg.enable_crc = true;
+        OggDemuxer d(cfg);
+        DriveResult r = drive_packets(d, stream, 64);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.skipped, 1);
+        CHECK_EQ(r.packets.size(), 1);
+        CHECK(r.packets[0].data == b);
+    }
+    return true;
+}
+
 // Streaming mode performs no heap allocation: the internal packet buffer is
 // never created, so its capacity stays zero and no allocator call is made.
 static bool test_streaming_no_heap_allocation() {
@@ -758,6 +931,74 @@ static bool test_oversized_spanning_packet_skipped() {
     CHECK_EQ(r.packets.size(), 2);
     CHECK(r.packets[0].data == a);
     CHECK(r.packets[1].data == c);
+    return true;
+}
+
+// A 255-multiple packet is framed with a trailing zero-length terminator. When
+// such a packet is skipped (too large to buffer) and is not last on its page, the
+// skip must leave the cursor on the next packet, not stranded on the terminator.
+// Regression: the terminator previously surfaced a phantom empty packet after the
+// skip.
+static bool test_skip_255_multiple_packet_mid_page() {
+    std::vector<uint8_t> big = make_pattern(1, 765);  // 3 * 255 -> lacing 255,255,255,0
+    std::vector<uint8_t> tail = make_pattern(2, 40);
+    std::vector<uint8_t> stream =
+        page_with_packets({big, tail}, 1, 0, 0, OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+    OggDemuxerConfig cfg;
+    cfg.min_buffer_size = 64;
+    cfg.max_buffer_size = 128;  // 765-byte packet exceeds this -> skipped
+    OggDemuxer d(cfg);
+    // Small windows prevent zero-copy, routing the oversized packet into skip mode.
+    DriveResult r = drive_packets(d, stream, 64);
+
+    CHECK(!r.errored);
+    CHECK(!r.stalled);
+    CHECK_EQ(r.skipped, 1);
+    // Exactly one real packet after the skip: no phantom empty packet from the
+    // trailing 0-length terminator.
+    CHECK_EQ(r.packets.size(), 1);
+    CHECK(r.packets[0].data == tail);
+    return true;
+}
+
+// After a 255-multiple packet is skipped mid-page, the skip completes at a true
+// packet boundary, so switching to get_next_data() there must be allowed and
+// return the following packet. Regression for the byte-count cursor resting on
+// the trailing 0 terminator, which made between_packets() reject the switch.
+static bool test_mode_switch_after_255_multiple_skip() {
+    std::vector<uint8_t> big = make_pattern(1, 510);  // 2 * 255 -> lacing 255,255,0
+    std::vector<uint8_t> tail = make_pattern(2, 40);
+    std::vector<uint8_t> stream =
+        page_with_packets({big, tail}, 1, 0, 0, OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+    OggDemuxerConfig cfg;
+    cfg.min_buffer_size = 64;
+    cfg.max_buffer_size = 128;  // force skip of the 510-byte packet
+    OggDemuxer d(cfg);
+
+    // Drive get_next_packet() in small windows until the oversized packet is skipped.
+    size_t off = 0;
+    bool skipped = false;
+    for (int i = 0; i < 100 && off < stream.size(); i++) {
+        const size_t avail = stream.size() - off;
+        const size_t win = avail < 64 ? avail : 64;
+        OggDemuxState s = d.get_next_packet(stream.data() + off, win);
+        CHECK(s.result >= 0);
+        off += s.bytes_consumed;
+        if (s.result == OGG_PACKET_SKIPPED) {
+            skipped = true;
+            break;
+        }
+    }
+    CHECK(skipped);
+
+    // Switch to streaming mode at the post-skip boundary: allowed, returns `tail`.
+    OggDemuxState sw = d.get_next_data(stream.data() + off, stream.size() - off);
+    CHECK_EQ(sw.result, OGG_OK);
+    CHECK(sw.packet.is_end_of_packet);
+    CHECK_EQ(sw.packet.length, tail.size());
+    CHECK(std::vector<uint8_t>(sw.packet.data, sw.packet.data + sw.packet.length) == tail);
     return true;
 }
 
@@ -1141,6 +1382,39 @@ static bool test_mode_switch_at_boundary_allowed() {
     return true;
 }
 
+// A packet whose size is an exact multiple of 255 is framed with a trailing
+// zero-length lacing terminator (e.g. [255, 0]). After get_next_data() streams
+// such a packet and reports is_end_of_packet, the cursor must rest at the true
+// packet boundary so switching to get_next_packet() is allowed. Regression test:
+// the terminator previously stalled the cursor, misreading the 255 as mid-packet
+// and rejecting the switch with OGG_INVALID_MODE_SWITCH.
+static bool test_mode_switch_after_255_multiple_packet() {
+    // First packet is exactly 255 bytes (lacing 255, 0); it is NOT last on the
+    // page, so the page is not finalized and the cursor sits on the terminator.
+    std::vector<uint8_t> a = make_pattern(4, 255);
+    std::vector<uint8_t> b = make_pattern(5, 40);
+    std::vector<uint8_t> stream =
+        page_with_packets({a, b}, 1, 0, 0, OGG_BEGINNING_OF_STREAM | OGG_END_OF_STREAM);
+
+    OggDemuxer d;
+
+    // Stream the first (255-byte) packet; it ends on a packet boundary.
+    OggDemuxState s1 = d.get_next_data(stream.data(), stream.size());
+    CHECK_EQ(s1.result, OGG_OK);
+    CHECK_EQ(s1.packet.length, a.size());
+    CHECK(s1.packet.is_end_of_packet);
+    CHECK(!s1.packet.is_last_on_page);
+
+    // Switch to packet mode at the boundary: must be allowed and return packet b.
+    const uint8_t* rest = stream.data() + s1.bytes_consumed;
+    const size_t rest_len = stream.size() - s1.bytes_consumed;
+    OggDemuxState s2 = d.get_next_packet(rest, rest_len);
+    CHECK_EQ(s2.result, OGG_OK);
+    CHECK_EQ(s2.packet.length, b.size());
+    CHECK(std::vector<uint8_t>(s2.packet.data, s2.packet.data + s2.packet.length) == b);
+    return true;
+}
+
 // Switching modes in the middle of a packet is rejected with
 // OGG_INVALID_MODE_SWITCH, consumes no input, and leaves demuxer state intact:
 // resuming in the original mode still completes the packet with the correct payload.
@@ -1265,17 +1539,22 @@ static const TestCase TESTS[] = {
     {"multi_segment_packet", test_multi_segment_packet},
     {"packet_exact_multiple_of_255", test_packet_exact_multiple_of_255},
     {"zero_length_packet", test_zero_length_packet},
+    {"zero_length_packet_after_assembled_packet", test_zero_length_packet_after_assembled_packet},
     {"empty_page_skipped", test_empty_page_skipped},
     {"packet_spanning_two_pages", test_packet_spanning_two_pages},
     {"packet_spanning_three_pages", test_packet_spanning_three_pages},
     {"chunked_input_invariance", test_chunked_input_invariance},
     {"streaming_mode_basic", test_streaming_mode_basic},
     {"streaming_matches_packet_mode", test_streaming_matches_packet_mode},
+    {"packet_255_multiple_terminator_at_page_start", test_255_multiple_terminator_at_page_start},
+    {"packet_255_multiple_terminator_only_page", test_255_multiple_terminator_only_page},
     {"streaming_no_heap_allocation", test_streaming_no_heap_allocation},
     {"streaming_zero_length_packets", test_streaming_zero_length_packets},
     {"zero_copy_vs_buffered", test_zero_copy_vs_buffered},
     {"oversized_packet_skipped", test_oversized_packet_skipped},
     {"oversized_spanning_packet_skipped", test_oversized_spanning_packet_skipped},
+    {"skip_255_multiple_packet_mid_page", test_skip_255_multiple_packet_mid_page},
+    {"mode_switch_after_255_multiple_skip", test_mode_switch_after_255_multiple_skip},
     {"buffer_grows_for_large_packet", test_buffer_grows_for_large_packet},
     {"custom_allocator_used", test_custom_allocator_used},
     {"initial_allocation_failure", test_initial_allocation_failure},
@@ -1295,6 +1574,7 @@ static const TestCase TESTS[] = {
     {"null_and_empty_input", test_null_and_empty_input},
     {"real_ogg_file_end_to_end", test_real_ogg_file_end_to_end},
     {"mode_switch_at_boundary_allowed", test_mode_switch_at_boundary_allowed},
+    {"mode_switch_after_255_multiple_packet", test_mode_switch_after_255_multiple_packet},
     {"mode_switch_mid_packet_rejected", test_mode_switch_mid_packet_rejected},
     {"mode_switch_mid_skip_rejected", test_mode_switch_mid_skip_rejected},
 };

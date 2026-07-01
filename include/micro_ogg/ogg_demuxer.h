@@ -339,6 +339,13 @@ private:
     // Advance segment tracking by specified number of bytes
     void advance_through_segments(size_t bytes_to_advance);
 
+    // After a packet's bytes are fully consumed, step the segment cursor past the
+    // packet's trailing zero-length lacing terminator (present when the packet
+    // size is an exact multiple of 255) so it rests on the next packet. A genuine
+    // zero-length packet is left in place, distinguished by a preceding lacing
+    // value below 255.
+    void step_past_packet_terminator();
+
     // Scan segment table from start_segment_index to find next packet boundary
     PacketInfo scan_for_next_packet(uint8_t start_segment_index) const;
 

@@ -81,7 +81,13 @@ set(DEMUXER_TESTS
     reset_reuse
     null_and_empty_input
     real_ogg_file_end_to_end
+    zero_length_packet_after_assembled_packet
+    packet_255_multiple_terminator_at_page_start
+    packet_255_multiple_terminator_only_page
+    skip_255_multiple_packet_mid_page
+    mode_switch_after_255_multiple_skip
     mode_switch_at_boundary_allowed
+    mode_switch_after_255_multiple_packet
     mode_switch_mid_packet_rejected
     mode_switch_mid_skip_rejected
 )
