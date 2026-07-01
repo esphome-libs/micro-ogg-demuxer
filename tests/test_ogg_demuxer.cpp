@@ -1142,7 +1142,8 @@ static bool test_mode_switch_at_boundary_allowed() {
 }
 
 // Switching modes in the middle of a packet is rejected with
-// OGG_INVALID_MODE_SWITCH and does not mutate state (bytes_consumed == 0).
+// OGG_INVALID_MODE_SWITCH, consumes no input, and leaves demuxer state intact:
+// resuming in the original mode still completes the packet with the correct payload.
 static bool test_mode_switch_mid_packet_rejected() {
     // (a) get_next_data() consumed only part of a packet -> get_next_packet() rejected.
     {
@@ -1155,10 +1156,19 @@ static bool test_mode_switch_mid_packet_rejected() {
         OggDemuxState s1 = d.get_next_data(stream.data(), 27 + 1 + 50);
         CHECK_EQ(s1.result, OGG_OK);
         CHECK(!s1.packet.is_end_of_packet);
+        std::vector<uint8_t> streamed(s1.packet.data, s1.packet.data + s1.packet.length);
 
         OggDemuxState s2 = d.get_next_packet(stream.data(), stream.size());
         CHECK_EQ(s2.result, OGG_INVALID_MODE_SWITCH);
         CHECK_EQ(s2.bytes_consumed, 0);
+
+        // Resume in the original (streaming) mode: the packet completes normally.
+        OggDemuxState s3 =
+            d.get_next_data(stream.data() + s1.bytes_consumed, stream.size() - s1.bytes_consumed);
+        CHECK_EQ(s3.result, OGG_OK);
+        CHECK(s3.packet.is_end_of_packet);
+        streamed.insert(streamed.end(), s3.packet.data, s3.packet.data + s3.packet.length);
+        CHECK(streamed == p);
     }
 
     // (b) get_next_packet() buffering a packet across input windows -> get_next_data() rejected.
@@ -1180,13 +1190,21 @@ static bool test_mode_switch_mid_packet_rejected() {
         OggDemuxState s2 = d.get_next_data(stream.data() + off, stream.size() - off);
         CHECK_EQ(s2.result, OGG_INVALID_MODE_SWITCH);
         CHECK_EQ(s2.bytes_consumed, 0);
+
+        // Resume in the original (packet) mode: assembly finishes the full packet.
+        const size_t resumed = off + s1.bytes_consumed;
+        OggDemuxState s3 = d.get_next_packet(stream.data() + resumed, stream.size() - resumed);
+        CHECK_EQ(s3.result, OGG_OK);
+        CHECK_EQ(s3.packet.length, p.size());
+        CHECK(std::vector<uint8_t>(s3.packet.data, s3.packet.data + s3.packet.length) == p);
     }
     return true;
 }
 
 // A skip that spans a page boundary keeps a packet in flight across the page
-// header. Switching to streaming mode while the skip is pending is rejected,
-// rather than corrupting the skip byte count.
+// header. Switching to streaming mode while the skip is pending is rejected
+// rather than corrupting the skip byte count, and resuming in packet mode
+// finishes the skip cleanly.
 static bool test_mode_switch_mid_skip_rejected() {
     OggDemuxerConfig cfg;
     cfg.min_buffer_size = 1;
@@ -1221,6 +1239,14 @@ static bool test_mode_switch_mid_skip_rejected() {
     OggDemuxState sd = d.get_next_data(page1.data(), page1.size());
     CHECK_EQ(sd.result, OGG_INVALID_MODE_SWITCH);
     CHECK_EQ(sd.bytes_consumed, 0);
+
+    // Resume in the original (packet) mode: page 1's header parses, then the
+    // still-pending skip finishes across the page and reports the packet skipped.
+    OggDemuxState r = d.get_next_packet(page1.data(), page1.size());
+    CHECK_EQ(r.result, OGG_NEED_MORE_DATA);
+    const size_t off1 = r.bytes_consumed;
+    r = d.get_next_packet(page1.data() + off1, page1.size() - off1);
+    CHECK_EQ(r.result, OGG_PACKET_SKIPPED);
     return true;
 }
 
