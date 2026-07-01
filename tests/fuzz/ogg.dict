@@ -1,0 +1,26 @@
+# libFuzzer dictionary for Ogg (RFC 3533) container fuzzing.
+# Format: one token per line, quoted C-escaped string.
+
+# Page capture pattern: every Ogg page begins with "OggS". This is the single
+# most valuable token -- it lets the mutator synthesize new page boundaries.
+"OggS"
+
+# Capture pattern followed by the stream structure version byte (0). The parser
+# rejects any other version, so the valid five-byte prefix is spelled out.
+"OggS\x00"
+
+# Header-type flag byte values (offset 5 of the header): continuation (0x01),
+# beginning-of-stream (0x02), end-of-stream (0x04), and the BOS|EOS combination
+# a single-page stream uses.
+"\x01"
+"\x02"
+"\x04"
+"\x06"
+
+# Lacing values that drive segment-table structure: 255 continues a packet into
+# the next segment (and, as the last value, onto the next page); 0 terminates a
+# packet whose size is an exact multiple of 255.
+"\xff"
+"\x00"
+"\xff\xff"
+"\xff\x00"

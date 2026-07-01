@@ -359,6 +359,8 @@ tests/build/test_ogg_demuxer tests/data packet_spanning_two_pages
 
 The real fixture is committed; regenerate it with `tests/generate_test_data.sh` (requires `ffmpeg` and `oggenc`) only when the fixture set needs to change.
 
+A libFuzzer harness lives in [tests/fuzz/](tests/fuzz/) for fuzzing the page demuxer; see its README for build and run instructions.
+
 ## Contributing
 
 Contributions welcome! Please ensure:

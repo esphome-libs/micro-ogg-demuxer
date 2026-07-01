@@ -76,6 +76,36 @@ jobs:
       - name: Run unit tests
         run: ctest --test-dir tests/build --output-on-failure
 
+  fuzz:
+    name: Fuzz build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      # Standalone harness (no libFuzzer runtime needed) under ASan/UBSan.
+      # Guards against harness compile/link regressions and runs the
+      # parameterless torture battery; deep corpus fuzzing stays a local task
+      # (see tests/fuzz). -fno-sanitize-recover=all in the build makes any
+      # sanitizer finding abort the run.
+      - name: Configure fuzz harness (standalone)
+        run: cmake -B tests/fuzz/build-standalone -DFUZZ_USE_LIBFUZZER=OFF -DCMAKE_CXX_COMPILER=clang++ tests/fuzz
+
+      - name: Build fuzz harness
+        run: cmake --build tests/fuzz/build-standalone
+
+      - name: Run standalone torture battery
+        env:
+          FUZZ_ITERATIONS: '500'
+          ASAN_OPTIONS: abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: ./tests/fuzz/build-standalone/fuzz_ogg_demux
+
   # Single aggregating status for branch protection: require only "CI success" instead of every job.
   # always() so it reports even when a job fails; skipped dependencies are treated as passing (only
   # failure/cancelled blocks).
@@ -87,6 +117,7 @@ jobs:
       - lint
       - build
       - test
+      - fuzz
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
