@@ -79,6 +79,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <vector>
 
 using micro_ogg::OggDemuxer;
@@ -196,8 +197,15 @@ void check_oracle(const OggDemuxState& st, const uint8_t* input, size_t offered,
         // bug whose overrun happens to stay inside the same allocation would slip
         // past ASan. A buffered return points into the internal buffer, outside
         // the window, and is bounded by payload_size above instead.
-        const bool points_into_window = st.packet.data >= input && st.packet.data < input + offered;
-        if (points_into_window && st.packet.data + st.packet.length > input + offered) {
+        // std::less gives a well-defined total order across allocations, so this
+        // stays defined even when packet.data points into the internal buffer (a
+        // different object than the input window); the builtin relational
+        // operators are only specified for pointers into the same object.
+        std::less<const uint8_t*> ptr_less;
+        const uint8_t* window_end = input + offered;
+        const bool points_into_window =
+            !ptr_less(st.packet.data, input) && ptr_less(st.packet.data, window_end);
+        if (points_into_window && ptr_less(window_end, st.packet.data + st.packet.length)) {
             std::abort();
         }
         // Streaming mode never buffers: the slice must always be a zero-copy view
@@ -543,7 +551,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     std::vector<uint8_t> payload = fdp.ConsumeRemainingBytes<uint8_t>();
 
     if (ctrl.empty()) {
-        ctrl.push_back(0x08);  // neutral default window (~248 bytes)
+        ctrl.push_back(0x08);  // neutral default window (249 bytes)
     }
     if (payload.empty()) {
         return 0;

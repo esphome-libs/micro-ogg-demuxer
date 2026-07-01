@@ -42,7 +42,7 @@ namespace {
 // bit 1 = small buffer, to drive the oversized-packet skip path).
 void append_config_tail(std::vector<uint8_t>& stream, uint8_t cfg) {
     for (int i = 0; i < 64; i++) {
-        stream.push_back(0x08);  // ~248-byte windows
+        stream.push_back(0x08);  // 249-byte windows
     }
     stream.push_back(cfg);
 }
