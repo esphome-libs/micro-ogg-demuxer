@@ -603,6 +603,154 @@ static bool test_streaming_matches_packet_mode() {
     return true;
 }
 
+// A 255-multiple packet can span pages so that its zero-length terminator lands at
+// the very start of the continuation page; the packet completes there with no
+// further bytes. Regression: skip mode stalled (bytes_to_skip_ == 0 with no input
+// to consume) and streaming merged the packet with the next one, because the
+// page-leading terminator was not recognized as a packet boundary.
+static bool test_255_multiple_terminator_at_page_start() {
+    std::vector<uint8_t> a = make_pattern(1, 510);  // 2 * 255: framed as 255, 255, 0
+    std::vector<uint8_t> b = make_pattern(2, 40);
+
+    std::vector<uint8_t> stream;
+    PageSpec p0;
+    p0.serial = 1;
+    p0.sequence = 0;
+    p0.header_type = OGG_BEGINNING_OF_STREAM;
+    p0.segments = {255, 255};  // both 255s of packet a: continues, terminator deferred
+    p0.body = a;
+    append_bytes(stream, make_page(p0));
+
+    PageSpec p1;
+    p1.serial = 1;
+    p1.sequence = 1;
+    p1.header_type = OGG_CONTINUED_PACKET | OGG_END_OF_STREAM;
+    p1.segments = {0, 40};  // terminator 0 of packet a at page start, then packet b
+    p1.body = b;
+    append_bytes(stream, make_page(p1));
+
+    // CRC on throughout: the page-leading terminator contributes no body bytes, so
+    // the per-page CRC accumulation must still validate across the page boundary.
+    OggDemuxerConfig crc_cfg;
+    crc_cfg.enable_crc = true;
+
+    // Packet mode (reference): two packets.
+    {
+        OggDemuxer d(crc_cfg);
+        DriveResult r = drive_packets(d, stream, SIZE_MAX);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == b);
+    }
+
+    // Streaming mode: same two packets, not merged. Small windows exercise both
+    // the header-then-body and body-only offer paths.
+    {
+        OggDemuxer d(crc_cfg);
+        DriveResult r = drive_data(d, stream, 7);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == b);
+    }
+
+    // Skip mode: packet a is too large to buffer and is skipped, but packet b still
+    // surfaces (no stall on the page-leading terminator).
+    {
+        OggDemuxerConfig cfg;
+        cfg.min_buffer_size = 64;
+        cfg.max_buffer_size = 128;  // 510-byte packet a exceeds this -> skipped
+        cfg.enable_crc = true;
+        OggDemuxer d(cfg);
+        DriveResult r = drive_packets(d, stream, 64);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.skipped, 1);
+        CHECK_EQ(r.packets.size(), 1);
+        CHECK(r.packets[0].data == b);
+    }
+    return true;
+}
+
+// The terminator can also land on a page of its own: a 255-multiple packet ends,
+// its zero-length terminator is the sole segment of the next page (zero body
+// bytes), and a further packet follows on a later page. Regression: in packet mode
+// the empty page was finalized before the in-flight packet was flushed, so the
+// packet was never returned and the next packet's bytes were appended to the stale
+// buffer, yielding one merged, oversized packet.
+static bool test_255_multiple_terminator_only_page() {
+    std::vector<uint8_t> a = make_pattern(1, 255);  // framed as 255 (page 0) then 0 (page 1)
+    std::vector<uint8_t> b = make_pattern(2, 30);
+
+    std::vector<uint8_t> stream;
+    PageSpec p0;
+    p0.serial = 1;
+    p0.sequence = 0;
+    p0.header_type = OGG_BEGINNING_OF_STREAM;
+    p0.segments = {255};  // all 255 bytes of packet a: continues, terminator deferred
+    p0.body = a;
+    append_bytes(stream, make_page(p0));
+
+    PageSpec p1;
+    p1.serial = 1;
+    p1.sequence = 1;
+    p1.header_type = OGG_CONTINUED_PACKET;
+    p1.segments = {0};  // terminator of packet a, alone on the page (zero body bytes)
+    append_bytes(stream, make_page(p1));
+
+    PageSpec p2;
+    p2.serial = 1;
+    p2.sequence = 2;
+    p2.header_type = OGG_END_OF_STREAM;
+    p2.segments = {30};
+    p2.body = b;
+    append_bytes(stream, make_page(p2));
+
+    OggDemuxerConfig crc_cfg;
+    crc_cfg.enable_crc = true;
+
+    // Packet mode: two separate packets, not merged.
+    for (size_t chunk : {SIZE_MAX, static_cast<size_t>(7)}) {
+        OggDemuxer d(crc_cfg);
+        DriveResult r = drive_packets(d, stream, chunk);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == b);
+    }
+
+    // Streaming mode: same two packets.
+    {
+        OggDemuxer d(crc_cfg);
+        DriveResult r = drive_data(d, stream, 7);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.packets.size(), 2);
+        CHECK(r.packets[0].data == a);
+        CHECK(r.packets[1].data == b);
+    }
+
+    // Skip mode: packet a is skipped, packet b still surfaces (no stall).
+    {
+        OggDemuxerConfig cfg;
+        cfg.min_buffer_size = 64;
+        cfg.max_buffer_size = 128;  // 255-byte packet a is skipped
+        cfg.enable_crc = true;
+        OggDemuxer d(cfg);
+        DriveResult r = drive_packets(d, stream, 64);
+        CHECK(!r.errored);
+        CHECK(!r.stalled);
+        CHECK_EQ(r.skipped, 1);
+        CHECK_EQ(r.packets.size(), 1);
+        CHECK(r.packets[0].data == b);
+    }
+    return true;
+}
+
 // Streaming mode performs no heap allocation: the internal packet buffer is
 // never created, so its capacity stays zero and no allocator call is made.
 static bool test_streaming_no_heap_allocation() {
@@ -1398,6 +1546,8 @@ static const TestCase TESTS[] = {
     {"chunked_input_invariance", test_chunked_input_invariance},
     {"streaming_mode_basic", test_streaming_mode_basic},
     {"streaming_matches_packet_mode", test_streaming_matches_packet_mode},
+    {"packet_255_multiple_terminator_at_page_start", test_255_multiple_terminator_at_page_start},
+    {"packet_255_multiple_terminator_only_page", test_255_multiple_terminator_only_page},
     {"streaming_no_heap_allocation", test_streaming_no_heap_allocation},
     {"streaming_zero_length_packets", test_streaming_zero_length_packets},
     {"zero_copy_vs_buffered", test_zero_copy_vs_buffered},
