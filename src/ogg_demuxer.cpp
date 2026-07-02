@@ -29,7 +29,8 @@ namespace micro_ogg {
 constexpr size_t OGG_PAGE_HEADER_SIZE = 27;      // Fixed header before segment table
 constexpr size_t OGG_SEGMENT_COUNT_OFFSET = 26;  // Offset to segment_count field
 constexpr size_t OGG_MAX_HEADER_SIZE = 282;      // 27 + 255 segment table entries
-constexpr uint64_t OGG_INVALID_GRANULE_POSITION = 0xFFFFFFFFFFFFFFFFULL;
+constexpr int64_t OGG_INVALID_GRANULE_POSITION =
+    -1;                                        // RFC 3533 sentinel: no packet finishes on page
 constexpr uint8_t OGG_MAX_LACING_VALUE = 255;  // Lacing value indicating packet continues
 
 // Ogg page header field offsets (RFC 3533)
@@ -49,6 +50,15 @@ static inline uint64_t read_le64(const uint8_t* p) {
            (static_cast<uint64_t>(p[2]) << 16) | (static_cast<uint64_t>(p[3]) << 24) |
            (static_cast<uint64_t>(p[4]) << 32) | (static_cast<uint64_t>(p[5]) << 40) |
            (static_cast<uint64_t>(p[6]) << 48) | (static_cast<uint64_t>(p[7]) << 56);
+}
+
+// Reinterpret a 64-bit pattern as signed. Ogg granule positions are signed
+// (RFC 3533 uses -1 as a sentinel), but out-of-range unsigned-to-signed
+// conversion is only implementation-defined before C++20, so bit-cast instead.
+static inline int64_t bitcast_i64(uint64_t v) {
+    int64_t out = 0;
+    std::memcpy(&out, &v, sizeof(out));
+    return out;
 }
 
 // CRC-32 lookup table (Ogg/Ethernet polynomial 0x04C11DB7)
@@ -438,7 +448,7 @@ OggDemuxResult OggDemuxer::parse_page_header(const uint8_t* data, size_t data_le
 
     // Parse header fields (capture pattern and version are already validated above)
     header.header_type = data[5];
-    header.granule_position = read_le64(data + OGG_GRANULE_OFFSET);
+    header.granule_position = bitcast_i64(read_le64(data + OGG_GRANULE_OFFSET));
     header.stream_serial = read_le32(data + OGG_SERIAL_OFFSET);
     header.page_sequence = read_le32(data + OGG_SEQUENCE_OFFSET);
     header.checksum = read_le32(data + OGG_CHECKSUM_OFFSET);
