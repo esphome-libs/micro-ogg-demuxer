@@ -145,6 +145,7 @@ bool is_valid_result(OggDemuxResult r) {
         case micro_ogg::OGG_STREAM_CONTINUATION_ERROR:
         case micro_ogg::OGG_ALLOCATION_FAILED:
         case micro_ogg::OGG_INVALID_MODE_SWITCH:
+        case micro_ogg::OGG_INVALID_INPUT:
             return true;
     }
     return false;
@@ -558,7 +559,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     }
 
     // Probe the null-input guard (a non-zero length with a null pointer) in both
-    // entry points. Both are documented to return OGG_INVALID_CAPTURE without
+    // entry points. Both are documented to return OGG_INVALID_INPUT without
     // touching state, so this cannot allocate or read through the null pointer.
     {
         OggDemuxer probe;

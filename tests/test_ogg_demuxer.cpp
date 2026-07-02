@@ -1297,14 +1297,14 @@ static bool test_null_and_empty_input() {
     uint8_t dummy = 0;
 
     OggDemuxState a = d.get_next_packet(nullptr, 10);
-    CHECK_EQ(a.result, OGG_INVALID_CAPTURE);
+    CHECK_EQ(a.result, OGG_INVALID_INPUT);
     CHECK_EQ(a.bytes_consumed, 0);
 
     OggDemuxState b = d.get_next_packet(&dummy, 0);
     CHECK_EQ(b.result, OGG_NEED_MORE_DATA);
 
     OggDemuxState c = d.get_next_data(nullptr, 10);
-    CHECK_EQ(c.result, OGG_INVALID_CAPTURE);
+    CHECK_EQ(c.result, OGG_INVALID_INPUT);
 
     OggDemuxState e = d.get_next_data(&dummy, 0);
     CHECK_EQ(e.result, OGG_NEED_MORE_DATA);
