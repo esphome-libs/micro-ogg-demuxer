@@ -55,6 +55,7 @@ static inline uint64_t read_le64(const uint8_t* p) {
 // Reinterpret a 64-bit pattern as signed. Ogg granule positions are signed
 // (RFC 3533 uses -1 as a sentinel), but converting an out-of-range uint64_t
 // to int64_t is implementation-defined, so reinterpret the bits instead.
+static inline int64_t bitcast_i64(uint64_t v) {
     int64_t out = 0;
     std::memcpy(&out, &v, sizeof(out));
     return out;
