@@ -37,6 +37,10 @@
 
 namespace micro_ogg {
 
+// Ogg page geometry (RFC 3533)
+constexpr size_t OGG_PAGE_HEADER_SIZE = 27;  // Fixed header before segment table
+constexpr size_t OGG_MAX_HEADER_SIZE = 282;  // 27 + 255 segment table entries
+
 /**
  * @brief Ogg page header structure (per RFC 3533)
  */
@@ -437,11 +441,12 @@ private:
     // then pointers, size_t, uint64_t, structs, uint32_t, and finally uint8_t/bool
 
     // Fixed inline buffer for header accumulation (27-byte header + up to 255-byte segment table)
-    uint8_t page_header_staging_[282]{};
+    uint8_t page_header_staging_[OGG_MAX_HEADER_SIZE]{};
 
     // 8-byte aligned: pointers
-    uint8_t* segment_table_{page_header_staging_ + 27};  // Points into page_header_staging_ + 27
-    uint8_t* internal_buffer_{nullptr};                  // Packet assembly buffer
+    // Points into page_header_staging_ past the fixed header
+    uint8_t* segment_table_{page_header_staging_ + OGG_PAGE_HEADER_SIZE};
+    uint8_t* internal_buffer_{nullptr};  // Packet assembly buffer
 
     // 8-byte aligned: size_t
     size_t page_header_staging_size_{0};

@@ -25,10 +25,10 @@
 
 namespace micro_ogg {
 
-// Ogg container constants (RFC 3533)
-constexpr size_t OGG_PAGE_HEADER_SIZE = 27;      // Fixed header before segment table
+// Ogg container constants (RFC 3533). Page geometry (OGG_PAGE_HEADER_SIZE,
+// OGG_MAX_HEADER_SIZE) lives in the public header, where the staging buffer
+// is declared.
 constexpr size_t OGG_SEGMENT_COUNT_OFFSET = 26;  // Offset to segment_count field
-constexpr size_t OGG_MAX_HEADER_SIZE = 282;      // 27 + 255 segment table entries
 constexpr int64_t OGG_INVALID_GRANULE_POSITION =
     -1;                                        // RFC 3533 sentinel: no packet finishes on page
 constexpr uint8_t OGG_MAX_LACING_VALUE = 255;  // Lacing value indicating packet continues
