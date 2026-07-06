@@ -501,7 +501,7 @@ bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
             state.result = OGG_ALLOCATION_FAILED;
             return false;
         }
-        internal_buffer_ = (uint8_t*)ptr;
+        internal_buffer_ = static_cast<uint8_t*>(ptr);
 #ifdef MICRO_OGG_DEMUXER_DEBUG
         // Track initial allocation
         peak_buffer_capacity_ = internal_buffer_capacity_;
@@ -1083,7 +1083,7 @@ OggDemuxer::GrowBufferResult OggDemuxer::grow_buffer(size_t needed_size) {
         return GROW_ALLOCATION_FAILED;
     }
 
-    internal_buffer_ = (uint8_t*)new_buffer;
+    internal_buffer_ = static_cast<uint8_t*>(new_buffer);
     internal_buffer_capacity_ = new_capacity;
 
 #ifdef MICRO_OGG_DEMUXER_DEBUG

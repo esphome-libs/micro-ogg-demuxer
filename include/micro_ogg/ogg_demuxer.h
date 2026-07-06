@@ -176,7 +176,7 @@ public:
      *       and defer processing until is_last_on_page is true, then discard all buffered
      *       packets if OGG_CRC_FAILED is returned.
      */
-    OggDemuxer(const OggDemuxerConfig& config = OggDemuxerConfig{});
+    explicit OggDemuxer(const OggDemuxerConfig& config = OggDemuxerConfig{});
     ~OggDemuxer();
 
     // Prevent copying (would cause double-free of owned pointers)
@@ -328,11 +328,11 @@ private:
     };
 
     // Parse Ogg page header from raw bytes
-    OggDemuxResult parse_page_header(const uint8_t* data, size_t data_len, OggPageHeader& header,
-                                     size_t& header_size);
+    static OggDemuxResult parse_page_header(const uint8_t* data, size_t data_len,
+                                            OggPageHeader& header, size_t& header_size);
 
     // Sum segment table lacing values to get total page body size
-    size_t calculate_body_size(const uint8_t* segment_table, uint8_t segment_count);
+    static size_t calculate_body_size(const uint8_t* segment_table, uint8_t segment_count);
 
     // Grow internal buffer to accommodate needed_size bytes
     GrowBufferResult grow_buffer(size_t needed_size);
@@ -468,10 +468,12 @@ private:
     bool enable_crc_{false};     // Enable/disable CRC validation
 
 #ifdef MICRO_OGG_DEMUXER_DEBUG
-    // Statistics (only enabled with MICRO_OGG_DEMUXER_DEBUG)
-    size_t zero_copy_packets_;     // Number of packets returned via zero-copy
-    size_t buffered_packets_;      // Number of packets that required buffering
-    size_t peak_buffer_capacity_;  // Peak internal buffer capacity reached
+    // Statistics (only enabled with MICRO_OGG_DEMUXER_DEBUG). The packet
+    // counters also re-zero on reset(); the capacity peak intentionally does
+    // not, since the internal buffer itself survives reset().
+    size_t zero_copy_packets_{0};     // Number of packets returned via zero-copy
+    size_t buffered_packets_{0};      // Number of packets that required buffering
+    size_t peak_buffer_capacity_{0};  // Peak internal buffer capacity reached
 #endif
 };
 
