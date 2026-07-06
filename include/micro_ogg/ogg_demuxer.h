@@ -24,6 +24,17 @@
 #include <cstddef>
 #include <cstdint>
 
+// Marks functions whose return value must not be ignored (the demuxer reports
+// errors only through the returned state). [[nodiscard]] needs C++17; the
+// library builds at C++11, so fall back to the GNU attribute there.
+#if defined(__cplusplus) && __cplusplus >= 201703L
+#define MICRO_OGG_NODISCARD [[nodiscard]]
+#elif defined(__GNUC__)
+#define MICRO_OGG_NODISCARD __attribute__((warn_unused_result))
+#else
+#define MICRO_OGG_NODISCARD
+#endif
+
 namespace micro_ogg {
 
 /**
@@ -204,6 +215,7 @@ public:
      * input_len -= state.bytes_consumed;
      * @endcode
      */
+    MICRO_OGG_NODISCARD
     OggDemuxState get_next_packet(const uint8_t* input, size_t input_len);
 
     /**
@@ -233,6 +245,7 @@ public:
      * len -= state.bytes_consumed;
      * @endcode
      */
+    MICRO_OGG_NODISCARD
     OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
 
     /**
