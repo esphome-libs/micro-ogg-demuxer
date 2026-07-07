@@ -3,6 +3,9 @@ build/
 build_*/
 cmake-build-*/
 
+# Local marker recording which internal conventions version is used for this project.
+.conventions-version
+
 # IDE files
 .vscode/
 .idea/

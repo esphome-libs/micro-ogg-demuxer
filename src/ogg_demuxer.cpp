@@ -25,10 +25,10 @@
 
 namespace micro_ogg {
 
-// Ogg container constants (RFC 3533)
-constexpr size_t OGG_PAGE_HEADER_SIZE = 27;      // Fixed header before segment table
+// Ogg container constants (RFC 3533). Page geometry (OGG_PAGE_HEADER_SIZE,
+// OGG_MAX_HEADER_SIZE) lives in the public header, where the staging buffer
+// is declared.
 constexpr size_t OGG_SEGMENT_COUNT_OFFSET = 26;  // Offset to segment_count field
-constexpr size_t OGG_MAX_HEADER_SIZE = 282;      // 27 + 255 segment table entries
 constexpr int64_t OGG_INVALID_GRANULE_POSITION =
     -1;                                        // RFC 3533 sentinel: no packet finishes on page
 constexpr uint8_t OGG_MAX_LACING_VALUE = 255;  // Lacing value indicating packet continues
@@ -62,7 +62,7 @@ static inline int64_t bitcast_i64(uint64_t v) {
 }
 
 // CRC-32 lookup table (Ogg/Ethernet polynomial 0x04C11DB7)
-static const uint32_t crc_lookup[256] = {
+static const uint32_t CRC_LOOKUP[256] = {
     0x00000000, 0x04c11db7, 0x09823b6e, 0x0d4326d9, 0x130476dc, 0x17c56b6b, 0x1a864db2, 0x1e475005,
     0x2608edb8, 0x22c9f00f, 0x2f8ad6d6, 0x2b4bcb61, 0x350c9b64, 0x31cd86d3, 0x3c8ea00a, 0x384fbdbd,
     0x4c11db70, 0x48d0c6c7, 0x4593e01e, 0x4152fda9, 0x5f15adac, 0x5bd4b01b, 0x569796c2, 0x52568b75,
@@ -100,24 +100,24 @@ static uint32_t calculate_crc32(const uint8_t* buffer, size_t size, uint32_t crc
     while (size >= 8) {
         crc ^= (static_cast<uint32_t>(buffer[0]) << 24) | (static_cast<uint32_t>(buffer[1]) << 16) |
                (static_cast<uint32_t>(buffer[2]) << 8) | buffer[3];
-        crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
-        crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
-        crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
-        crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
+        crc = CRC_LOOKUP[(crc >> 24) & 0xff] ^ (crc << 8);
+        crc = CRC_LOOKUP[(crc >> 24) & 0xff] ^ (crc << 8);
+        crc = CRC_LOOKUP[(crc >> 24) & 0xff] ^ (crc << 8);
+        crc = CRC_LOOKUP[(crc >> 24) & 0xff] ^ (crc << 8);
 
         crc ^= (static_cast<uint32_t>(buffer[4]) << 24) | (static_cast<uint32_t>(buffer[5]) << 16) |
                (static_cast<uint32_t>(buffer[6]) << 8) | buffer[7];
-        crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
-        crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
-        crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
-        crc = crc_lookup[(crc >> 24) & 0xff] ^ (crc << 8);
+        crc = CRC_LOOKUP[(crc >> 24) & 0xff] ^ (crc << 8);
+        crc = CRC_LOOKUP[(crc >> 24) & 0xff] ^ (crc << 8);
+        crc = CRC_LOOKUP[(crc >> 24) & 0xff] ^ (crc << 8);
+        crc = CRC_LOOKUP[(crc >> 24) & 0xff] ^ (crc << 8);
 
         buffer += 8;
         size -= 8;
     }
 
     while (size != 0) {
-        crc = (crc << 8) ^ crc_lookup[((crc >> 24) & 0xff) ^ *buffer++];
+        crc = (crc << 8) ^ CRC_LOOKUP[((crc >> 24) & 0xff) ^ *buffer++];
         --size;
     }
 
@@ -501,7 +501,7 @@ bool OggDemuxer::ensure_buffers_allocated(OggDemuxState& state) {
             state.result = OGG_ALLOCATION_FAILED;
             return false;
         }
-        internal_buffer_ = (uint8_t*)ptr;
+        internal_buffer_ = static_cast<uint8_t*>(ptr);
 #ifdef MICRO_OGG_DEMUXER_DEBUG
         // Track initial allocation
         peak_buffer_capacity_ = internal_buffer_capacity_;
@@ -1083,7 +1083,7 @@ OggDemuxer::GrowBufferResult OggDemuxer::grow_buffer(size_t needed_size) {
         return GROW_ALLOCATION_FAILED;
     }
 
-    internal_buffer_ = (uint8_t*)new_buffer;
+    internal_buffer_ = static_cast<uint8_t*>(new_buffer);
     internal_buffer_capacity_ = new_capacity;
 
 #ifdef MICRO_OGG_DEMUXER_DEBUG

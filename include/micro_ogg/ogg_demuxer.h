@@ -24,7 +24,22 @@
 #include <cstddef>
 #include <cstdint>
 
+// Marks functions whose return value must not be ignored (the demuxer reports
+// errors only through the returned state). [[nodiscard]] needs C++17; the
+// library builds at C++11, so fall back to the GNU attribute there.
+#if defined(__cplusplus) && __cplusplus >= 201703L
+#define MICRO_OGG_NODISCARD [[nodiscard]]
+#elif defined(__GNUC__)
+#define MICRO_OGG_NODISCARD __attribute__((warn_unused_result))
+#else
+#define MICRO_OGG_NODISCARD
+#endif
+
 namespace micro_ogg {
+
+// Ogg page geometry (RFC 3533)
+constexpr size_t OGG_PAGE_HEADER_SIZE = 27;  // Fixed header before segment table
+constexpr size_t OGG_MAX_HEADER_SIZE = 282;  // 27 + 255 segment table entries
 
 /**
  * @brief Ogg page header structure (per RFC 3533)
@@ -176,7 +191,7 @@ public:
      *       and defer processing until is_last_on_page is true, then discard all buffered
      *       packets if OGG_CRC_FAILED is returned.
      */
-    OggDemuxer(const OggDemuxerConfig& config = OggDemuxerConfig{});
+    explicit OggDemuxer(const OggDemuxerConfig& config = OggDemuxerConfig{});
     ~OggDemuxer();
 
     // Prevent copying (would cause double-free of owned pointers)
@@ -204,6 +219,7 @@ public:
      * input_len -= state.bytes_consumed;
      * @endcode
      */
+    MICRO_OGG_NODISCARD
     OggDemuxState get_next_packet(const uint8_t* input, size_t input_len);
 
     /**
@@ -233,6 +249,7 @@ public:
      * len -= state.bytes_consumed;
      * @endcode
      */
+    MICRO_OGG_NODISCARD
     OggDemuxState get_next_data(const uint8_t* input, size_t input_len);
 
     /**
@@ -328,11 +345,11 @@ private:
     };
 
     // Parse Ogg page header from raw bytes
-    OggDemuxResult parse_page_header(const uint8_t* data, size_t data_len, OggPageHeader& header,
-                                     size_t& header_size);
+    static OggDemuxResult parse_page_header(const uint8_t* data, size_t data_len,
+                                            OggPageHeader& header, size_t& header_size);
 
     // Sum segment table lacing values to get total page body size
-    size_t calculate_body_size(const uint8_t* segment_table, uint8_t segment_count);
+    static size_t calculate_body_size(const uint8_t* segment_table, uint8_t segment_count);
 
     // Grow internal buffer to accommodate needed_size bytes
     GrowBufferResult grow_buffer(size_t needed_size);
@@ -424,11 +441,12 @@ private:
     // then pointers, size_t, uint64_t, structs, uint32_t, and finally uint8_t/bool
 
     // Fixed inline buffer for header accumulation (27-byte header + up to 255-byte segment table)
-    uint8_t page_header_staging_[282]{};
+    uint8_t page_header_staging_[OGG_MAX_HEADER_SIZE]{};
 
     // 8-byte aligned: pointers
-    uint8_t* segment_table_{page_header_staging_ + 27};  // Points into page_header_staging_ + 27
-    uint8_t* internal_buffer_{nullptr};                  // Packet assembly buffer
+    // Points into page_header_staging_ past the fixed header
+    uint8_t* segment_table_{page_header_staging_ + OGG_PAGE_HEADER_SIZE};
+    uint8_t* internal_buffer_{nullptr};  // Packet assembly buffer
 
     // 8-byte aligned: size_t
     size_t page_header_staging_size_{0};
@@ -468,10 +486,12 @@ private:
     bool enable_crc_{false};     // Enable/disable CRC validation
 
 #ifdef MICRO_OGG_DEMUXER_DEBUG
-    // Statistics (only enabled with MICRO_OGG_DEMUXER_DEBUG)
-    size_t zero_copy_packets_;     // Number of packets returned via zero-copy
-    size_t buffered_packets_;      // Number of packets that required buffering
-    size_t peak_buffer_capacity_;  // Peak internal buffer capacity reached
+    // Statistics (only enabled with MICRO_OGG_DEMUXER_DEBUG). The packet
+    // counters also re-zero on reset(); the capacity peak intentionally does
+    // not, since the internal buffer itself survives reset().
+    size_t zero_copy_packets_{0};     // Number of packets returned via zero-copy
+    size_t buffered_packets_{0};      // Number of packets that required buffering
+    size_t peak_buffer_capacity_{0};  // Peak internal buffer capacity reached
 #endif
 };
 

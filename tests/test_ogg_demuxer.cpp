@@ -772,6 +772,21 @@ static bool test_streaming_no_heap_allocation() {
     size_t current = 1, peak = 1;
     d.get_buffer_stats(current, peak);
     CHECK_EQ(current, 0);
+    CHECK_EQ(peak, 0);  // Never allocated, so the lifetime peak is also zero
+
+    // The stream ended on a packet boundary, so no packet is mid-assembly
+    int state = -1;
+    bool assembling = true;
+    bool skipping = true;
+    size_t packet_size = 1;
+    size_t body_consumed = 1;
+    uint8_t seg_index = 0;
+    uint8_t seg_count = 0;
+    d.get_debug_state(state, assembling, skipping, packet_size, body_consumed, seg_index,
+                      seg_count);
+    CHECK(!assembling);
+    CHECK(!skipping);
+    CHECK_EQ(packet_size, 0);
 #endif
     return true;
 }
