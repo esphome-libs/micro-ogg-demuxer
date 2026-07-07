@@ -125,9 +125,9 @@ static uint32_t calculate_crc32(const uint8_t* buffer, size_t size, uint32_t crc
 }
 
 OggDemuxer::OggDemuxer(const OggDemuxerConfig& config)
-    : min_buffer_size_(config.min_buffer_size),
+    : config_(config),
       max_buffer_size_(config.max_buffer_size),
-      config_(config),
+      min_buffer_size_(config.min_buffer_size),
       enable_crc_(config.enable_crc) {
     // Validate and fix buffer size configuration
     if (min_buffer_size_ == 0) {
@@ -137,7 +137,7 @@ OggDemuxer::OggDemuxer(const OggDemuxerConfig& config)
         max_buffer_size_ = min_buffer_size_;
     }
 
-    // Warn/fix inconsistent allocator configuration
+    // Fix inconsistent allocator configuration
     // If only some callbacks are provided, fall back to all standard functions
     bool has_alloc = (config_.alloc != nullptr);
     bool has_free = (config_.free != nullptr);
@@ -162,111 +162,6 @@ OggDemuxer::~OggDemuxer() {
             std::free(internal_buffer_);
         }
     }
-}
-
-// ==============================================================================
-// PUBLIC API: State Management
-// ==============================================================================
-
-void OggDemuxer::reset() {
-    state_ = STATE_EXPECT_PAGE_HEADER;
-    page_header_staging_size_ = 0;
-    current_segment_index_ = 0;
-    page_body_bytes_consumed_ = 0;
-    page_body_size_ = 0;
-    packet_assembly_size_ = 0;
-    assembling_packet_ = false;
-    skipping_packet_ = false;
-    current_span_ = PacketInfo{};
-    span_remaining_ = 0;
-    span_active_ = false;
-    previous_page_ended_with_continued_packet_ = false;
-    granule_position_ = 0;
-    stream_serial_ = 0;
-    expected_page_sequence_ = 0;
-    stream_initialized_ = false;
-    current_packet_is_bos_ = false;
-    bos_flag_used_ = false;
-    incremental_crc_ = 0;
-    active_mode_ = ConsumptionMode::UNSET;
-#ifdef MICRO_OGG_DEMUXER_DEBUG
-    zero_copy_packets_ = 0;
-    buffered_packets_ = 0;
-#endif
-}
-
-bool OggDemuxer::current_page_has_continued_flag() const {
-    return (current_page_.header_type & OGG_CONTINUED_PACKET) != 0;
-}
-
-bool OggDemuxer::previous_page_ended_with_continued_packet() const {
-    return previous_page_ended_with_continued_packet_;
-}
-
-// ==============================================================================
-// PUBLIC API: Packet Demuxing
-// ==============================================================================
-
-OggDemuxState OggDemuxer::get_next_packet(const uint8_t* input, size_t input_len) {
-    OggDemuxState state{};
-
-    // Validate input parameters
-    if (input_len > 0 && !input) {
-        state.result = OGG_INVALID_INPUT;
-        state.bytes_consumed = 0;
-        state.packet.length = 0;
-        state.packet.is_bos = false;
-        state.packet.is_eos = false;
-        state.packet.is_last_on_page = false;
-        state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
-        return state;
-    }
-
-    // Reject interleaving with get_next_data() unless at a packet boundary
-    if (!enforce_mode(ConsumptionMode::PACKET, state)) {
-        return state;
-    }
-
-    // Lazy allocation: allocate buffers on first use
-    if (!ensure_buffers_allocated(state)) {
-        return state;
-    }
-
-    state.bytes_consumed = 0;
-    state.packet.length = 0;
-    state.packet.is_bos = false;
-    state.packet.is_eos = false;
-    state.packet.is_last_on_page = false;
-    state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
-
-    // ==========================================================================
-    // PHASE A: PAGE HEADER PARSING
-    // ==========================================================================
-    if (state_ == STATE_EXPECT_PAGE_HEADER || state_ == STATE_ACCUMULATING_PAGE_HEADER) {
-        // Either a packet was returned (zero-copy fast path), an error was set,
-        // or the header was consumed and the body arrives on the next call.
-        handle_page_header(input, input_len, state);
-        return state;
-    }
-
-    // ==========================================================================
-    // PHASE B: PACKET EXTRACTION (STATE_PROCESSING_SEGMENTS)
-    // ==========================================================================
-    // ===== Case 0: Skipping Packet (Too Large to Buffer) =====
-    if (skipping_packet_) {
-        handle_skipping_packet(input, input_len, state);
-        return state;
-    }
-
-    // ===== Case 1: Assembling Packet (Greedy Buffering) =====
-    if (assembling_packet_) {
-        handle_assembling_packet(input, input_len, state);
-        return state;
-    }
-
-    // ===== Case 2: Zero-Copy Mode =====
-    handle_zero_copy_path(input, input_len, state);
-    return state;
 }
 
 // ==============================================================================
@@ -423,6 +318,111 @@ void OggDemuxer::offer_body_data(const uint8_t* body, size_t body_len, size_t he
     }
 
     state.result = OGG_OK;
+}
+
+// ==============================================================================
+// PUBLIC API: Packet Demuxing
+// ==============================================================================
+
+OggDemuxState OggDemuxer::get_next_packet(const uint8_t* input, size_t input_len) {
+    OggDemuxState state{};
+
+    // Validate input parameters
+    if (input_len > 0 && !input) {
+        state.result = OGG_INVALID_INPUT;
+        state.bytes_consumed = 0;
+        state.packet.length = 0;
+        state.packet.is_bos = false;
+        state.packet.is_eos = false;
+        state.packet.is_last_on_page = false;
+        state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+        return state;
+    }
+
+    // Reject interleaving with get_next_data() unless at a packet boundary
+    if (!enforce_mode(ConsumptionMode::PACKET, state)) {
+        return state;
+    }
+
+    // Lazy allocation: allocate buffers on first use
+    if (!ensure_buffers_allocated(state)) {
+        return state;
+    }
+
+    state.bytes_consumed = 0;
+    state.packet.length = 0;
+    state.packet.is_bos = false;
+    state.packet.is_eos = false;
+    state.packet.is_last_on_page = false;
+    state.packet.granule_position = OGG_INVALID_GRANULE_POSITION;
+
+    // ==========================================================================
+    // PHASE A: PAGE HEADER PARSING
+    // ==========================================================================
+    if (state_ == STATE_EXPECT_PAGE_HEADER || state_ == STATE_ACCUMULATING_PAGE_HEADER) {
+        // Either a packet was returned (zero-copy fast path), an error was set,
+        // or the header was consumed and the body arrives on the next call.
+        handle_page_header(input, input_len, state);
+        return state;
+    }
+
+    // ==========================================================================
+    // PHASE B: PACKET EXTRACTION (STATE_PROCESSING_SEGMENTS)
+    // ==========================================================================
+    // ===== Case 0: Skipping Packet (Too Large to Buffer) =====
+    if (skipping_packet_) {
+        handle_skipping_packet(input, input_len, state);
+        return state;
+    }
+
+    // ===== Case 1: Assembling Packet (Greedy Buffering) =====
+    if (assembling_packet_) {
+        handle_assembling_packet(input, input_len, state);
+        return state;
+    }
+
+    // ===== Case 2: Zero-Copy Mode =====
+    handle_zero_copy_path(input, input_len, state);
+    return state;
+}
+
+// ==============================================================================
+// PUBLIC API: State Management
+// ==============================================================================
+
+void OggDemuxer::reset() {
+    state_ = STATE_EXPECT_PAGE_HEADER;
+    page_header_staging_size_ = 0;
+    current_segment_index_ = 0;
+    page_body_bytes_consumed_ = 0;
+    page_body_size_ = 0;
+    packet_assembly_size_ = 0;
+    assembling_packet_ = false;
+    skipping_packet_ = false;
+    current_span_ = PacketInfo{};
+    span_remaining_ = 0;
+    span_active_ = false;
+    previous_page_ended_with_continued_packet_ = false;
+    granule_position_ = 0;
+    stream_serial_ = 0;
+    expected_page_sequence_ = 0;
+    stream_initialized_ = false;
+    current_packet_is_bos_ = false;
+    bos_flag_used_ = false;
+    incremental_crc_ = 0;
+    active_mode_ = ConsumptionMode::UNSET;
+#ifdef MICRO_OGG_DEMUXER_DEBUG
+    zero_copy_packets_ = 0;
+    buffered_packets_ = 0;
+#endif
+}
+
+bool OggDemuxer::current_page_has_continued_flag() const {
+    return (current_page_.header_type & OGG_CONTINUED_PACKET) != 0;
+}
+
+bool OggDemuxer::previous_page_ended_with_continued_packet() const {
+    return previous_page_ended_with_continued_packet_;
 }
 
 // ==============================================================================
@@ -944,7 +944,7 @@ void OggDemuxer::handle_zero_copy_path(const uint8_t* input, size_t input_len,
 
     // Check if we have enough data and packet is complete
     if (next_packet.complete && input_len >= next_packet.size) {
-        // Zero-copy return!
+        // Zero-copy return
         handle_zero_copy_return(input, next_packet, 0, state);
         return;
     }
