@@ -119,8 +119,9 @@ struct OggDemuxState {
  * - alloc: Must return nullptr on failure (like malloc)
  * - realloc: Must return nullptr on failure without freeing original ptr (like realloc)
  * - free: Must handle nullptr gracefully (like free)
- * - If alloc is provided, free must also be provided (and vice versa)
- * - If only some callbacks are set, they will be ignored and standard malloc/free used
+ * - The callbacks are used as a full set: provide all of alloc/realloc/free or none
+ * - If only some callbacks are set, they are all ignored and standard
+ *   malloc/realloc/free used
  */
 struct OggDemuxerConfig {
     size_t min_buffer_size = 1024;

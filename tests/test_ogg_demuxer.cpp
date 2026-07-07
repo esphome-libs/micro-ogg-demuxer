@@ -1072,6 +1072,30 @@ static bool test_custom_allocator_used() {
     return true;
 }
 
+// A partial callback set (alloc/free without realloc) is discarded as a whole:
+// the demuxer falls back to standard malloc/realloc/free instead of mixing
+// std::realloc with a pointer from the custom allocator.
+static bool test_partial_allocator_set_ignored() {
+    std::vector<uint8_t> body;
+    std::vector<uint8_t> stream = spanning_packet_stream(43, 1000, body);
+
+    reset_alloc_counts();
+    OggDemuxerConfig cfg;
+    cfg.min_buffer_size = 64;
+    cfg.max_buffer_size = 8192;
+    cfg.alloc = counting_alloc;
+    cfg.free = counting_free;  // realloc left null: the whole set is ignored
+    OggDemuxer d(cfg);
+    DriveResult r = drive_packets(d, stream, SIZE_MAX);
+
+    CHECK(!r.errored);
+    CHECK_EQ(r.packets.size(), 1);
+    CHECK(r.packets[0].data == body);
+    CHECK_EQ(g_alloc_count, 0);  // custom callbacks never used
+    CHECK_EQ(g_free_count, 0);
+    return true;
+}
+
 // A failing allocator surfaces OGG_ALLOCATION_FAILED on the first call (lazy
 // buffer allocation) rather than crashing.
 static bool test_initial_allocation_failure() {
@@ -1572,6 +1596,7 @@ static const TestCase TESTS[] = {
     {"mode_switch_after_255_multiple_skip", test_mode_switch_after_255_multiple_skip},
     {"buffer_grows_for_large_packet", test_buffer_grows_for_large_packet},
     {"custom_allocator_used", test_custom_allocator_used},
+    {"partial_allocator_set_ignored", test_partial_allocator_set_ignored},
     {"initial_allocation_failure", test_initial_allocation_failure},
     {"realloc_failure_during_assembly", test_realloc_failure_during_assembly},
     {"crc_accepts_valid_pages", test_crc_accepts_valid_pages},

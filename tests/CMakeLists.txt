@@ -72,6 +72,7 @@ set(DEMUXER_TESTS
     oversized_spanning_packet_skipped
     buffer_grows_for_large_packet
     custom_allocator_used
+    partial_allocator_set_ignored
     initial_allocation_failure
     realloc_failure_during_assembly
     crc_accepts_valid_pages

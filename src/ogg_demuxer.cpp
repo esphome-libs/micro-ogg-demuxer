@@ -137,12 +137,13 @@ OggDemuxer::OggDemuxer(const OggDemuxerConfig& config)
         max_buffer_size_ = min_buffer_size_;
     }
 
-    // Fix inconsistent allocator configuration
-    // If only some callbacks are provided, fall back to all standard functions
+    // Fix inconsistent allocator configuration. The callbacks only compose as a
+    // full set (buffer growth realloc's a pointer that came from alloc), so if
+    // any of the trio is missing, fall back to all standard functions.
     bool has_alloc = (config_.alloc != nullptr);
+    bool has_realloc = (config_.realloc != nullptr);
     bool has_free = (config_.free != nullptr);
-    if (has_alloc != has_free) {
-        // Inconsistent - clear both to use standard malloc/free
+    if (has_alloc != has_free || has_alloc != has_realloc) {
         config_.alloc = nullptr;
         config_.realloc = nullptr;
         config_.free = nullptr;

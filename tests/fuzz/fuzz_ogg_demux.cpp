@@ -597,7 +597,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         cfg.max_buffer_size = small_buffer ? 512 : (payload.size() + 4096);
     }
     if (one_sided_alloc) {
-        cfg.alloc = &fault_alloc;  // free left null: the ctor discards both
+        cfg.alloc = &fault_alloc;  // realloc/free left null: the ctor discards the set
     } else if (inject_faults) {
         cfg.alloc = &fault_alloc;
         cfg.realloc = &fault_realloc;
