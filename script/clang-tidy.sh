@@ -9,14 +9,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${ROOT_DIR}/build"
 
-# Find clang-tidy
-CLANG_TIDY=""
-for name in clang-tidy clang-tidy-18 clang-tidy-17 clang-tidy-16 clang-tidy-15; do
-    if command -v "$name" &> /dev/null; then
-        CLANG_TIDY="$name"
-        break
-    fi
-done
+# Find clang-tidy. A pre-set $CLANG_TIDY (CI pins it to clang-tidy-18) wins over PATH discovery.
+CLANG_TIDY="${CLANG_TIDY:-}"
+if [ -z "$CLANG_TIDY" ]; then
+    for name in clang-tidy clang-tidy-18 clang-tidy-17 clang-tidy-16 clang-tidy-15; do
+        if command -v "$name" &> /dev/null; then
+            CLANG_TIDY="$name"
+            break
+        fi
+    done
+fi
 
 # Check Homebrew LLVM paths on macOS
 if [ -z "$CLANG_TIDY" ]; then
@@ -28,8 +30,10 @@ if [ -z "$CLANG_TIDY" ]; then
     done
 fi
 
-if [ -z "$CLANG_TIDY" ]; then
-    echo "Error: clang-tidy not found"
+# Validate the resolved binary up front: catches both an empty result and a bogus pre-set
+# $CLANG_TIDY, instead of failing later with a bare "command not found".
+if ! command -v "$CLANG_TIDY" &> /dev/null; then
+    echo "Error: clang-tidy not found or not executable: '${CLANG_TIDY:-unset}'"
     exit 1
 fi
 
@@ -39,8 +43,10 @@ if [ ! -f "${BUILD_DIR}/compile_commands.json" ]; then
     cmake -B "$BUILD_DIR" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON "$ROOT_DIR"
 fi
 
-# Find all C++ source files
-SOURCES=$(find "$ROOT_DIR/src" -name '*.cpp' -o -name '*.c' 2>/dev/null || true)
+# Find all source files, excluding build/ directories
+SOURCES=$(find "$ROOT_DIR/src" \
+    -path '*/build' -prune -o \
+    \( -name '*.cpp' -o -name '*.c' \) -print 2>/dev/null || true)
 
 if [ -z "$SOURCES" ]; then
     echo "No source files found"
@@ -54,4 +60,6 @@ if [ "$1" = "--fix" ]; then
 fi
 
 echo "Running clang-tidy..."
-$CLANG_TIDY -p "$BUILD_DIR" $FIX_FLAG $SOURCES
+# --warnings-as-errors keeps the exit code non-zero on any finding even if a
+# repo's .clang-tidy ever loses its WarningsAsErrors line; CI relies on this.
+$CLANG_TIDY -p "$BUILD_DIR" --warnings-as-errors='*' $FIX_FLAG $SOURCES

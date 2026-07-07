@@ -26,7 +26,7 @@ cd "$ROOT_DIR"
 #       analyzes without them
 cppcheck \
     --enable=warning,style,unusedFunction \
-    --std=c++14 \
+    --std=c++11 \
     --inline-suppr \
     --quiet \
     --error-exitcode=1 \
