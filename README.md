@@ -105,7 +105,7 @@ Non-negative codes are success or informational; negative codes are errors. Chec
 | `OGG_OK` | 0 | Packet extracted; `state.packet` is valid |
 | `OGG_NEED_MORE_DATA` | 1 | Call again with more input |
 | `OGG_PACKET_SKIPPED` | 2 | A boundary-spanning packet exceeded `max_buffer_size` and was skipped |
-| `OGG_INVALID_CAPTURE` | -1 | "OggS" capture pattern not found |
+| `OGG_INVALID_CAPTURE` | -1 | Input does not begin with the "OggS" capture pattern (no resynchronization is attempted) |
 | `OGG_INVALID_VERSION` | -2 | Unsupported Ogg version |
 | `OGG_CRC_FAILED` | -3 | Page CRC32 mismatch (only with `enable_crc`) |
 | `OGG_STREAM_SEQUENCE_ERROR` | -4 | Page sequence number gap (lost or reordered page) |
@@ -137,7 +137,7 @@ Non-negative codes are success or informational; negative codes are errors. Chec
 | `min_buffer_size` | 1024 | Initial packet assembly buffer size in bytes |
 | `max_buffer_size` | 8192 | Assembly buffer cap; only limits packets that span pages or input chunks, zero-copy packets can be any size |
 | `enable_crc` | false | Page CRC32 validation (see [CRC Validation](#crc-validation)) |
-| `alloc`, `realloc`, `free` | `nullptr` | Custom allocator callbacks; standard `malloc`/`realloc`/`free` when unset |
+| `alloc`, `realloc`, `free` | `nullptr` | Custom allocator callbacks; set all three or none (a partial set is ignored and standard `malloc`/`realloc`/`free` are used) |
 
 ```cpp
 OggDemuxerConfig config;
