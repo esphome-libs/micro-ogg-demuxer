@@ -84,6 +84,9 @@ set(DEMUXER_TESTS
     serial_mismatch
     page_sequence_error
     continuation_flag_mismatch
+    continuation_flag_mismatch_sequence_wrap
+    sequence_wrap_valid
+    bos_with_continued_flag_rejected
     eos_with_continued_packet
     granule_position_propagation
     reset_reuse

@@ -733,11 +733,16 @@ bool OggDemuxer::validate_stream_consistency(OggDemuxState& state) {
     expected_page_sequence_++;
 
     // RFC 3533 Section 6: Validate continued packet flag consistency
-    // A page with the continued flag set must follow a page whose last segment was 255
-    // (indicating the packet continues). Skip the first page (BOS) since there's no previous.
+    // A page's continued flag must agree with whether the previous page left a
+    // packet open (its last segment was 255). The check runs on every page: on the
+    // first page previous_page_ended_with_continued_packet_ is false (its reset
+    // state), which correctly models "no previous page". A well-formed BOS page
+    // (continued unset) passes, and a BOS page that falsely claims a continuation
+    // is rejected. Deriving the first-page case from this state rather than from
+    // page_sequence also means a stream whose sequence wraps through 0 (a crafted
+    // first page at 0xFFFFFFFF) cannot make a later page masquerade as the first.
     bool has_continued_flag = (current_page_.header_type & OGG_CONTINUED_PACKET) != 0;
-    if (current_page_.page_sequence > 0 &&
-        has_continued_flag != previous_page_ended_with_continued_packet_) {
+    if (has_continued_flag != previous_page_ended_with_continued_packet_) {
         state.result = OGG_STREAM_CONTINUATION_ERROR;
         return false;
     }

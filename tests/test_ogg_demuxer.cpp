@@ -1262,6 +1262,61 @@ static bool test_continuation_flag_mismatch() {
     return true;
 }
 
+// A page must not escape the continued-flag check merely because its raw
+// sequence is 0. A crafted stream whose first page starts at 0xFFFFFFFF makes
+// the second page carry sequence 0 (after the uint32 increment wraps). That page
+// must not be able to masquerade as the first and slip the continued-flag check:
+// here it falsely claims a continued packet though page 0 ended on a boundary.
+static bool test_continuation_flag_mismatch_sequence_wrap() {
+    std::vector<uint8_t> stream;
+    append_bytes(stream, page_with_packets({make_pattern(1, 10)}, 1, 0xFFFFFFFFU, 0,
+                                           OGG_BEGINNING_OF_STREAM));
+    // expected_page_sequence_ wraps 0xFFFFFFFF -> 0, so this page passes the
+    // sequence-equality check while carrying raw sequence 0.
+    append_bytes(stream, page_with_packets({make_pattern(2, 10)}, 1, 0, 0, OGG_CONTINUED_PACKET));
+
+    OggDemuxer d;
+    DriveResult r = drive_packets(d, stream, SIZE_MAX);
+    CHECK(r.errored);
+    CHECK_EQ(r.final_result, OGG_STREAM_CONTINUATION_ERROR);
+    return true;
+}
+
+// The counterpart: a well-formed stream may legitimately wrap its page sequence
+// through 0 (first page at 0xFFFFFFFF). With consistent continued flags it must
+// still demux normally. The fix must not over-reject the wrap it now inspects.
+static bool test_sequence_wrap_valid() {
+    std::vector<uint8_t> stream;
+    append_bytes(stream, page_with_packets({make_pattern(1, 10)}, 1, 0xFFFFFFFFU, 0,
+                                           OGG_BEGINNING_OF_STREAM));
+    append_bytes(stream, page_with_packets({make_pattern(2, 20)}, 1, 0, 0, OGG_END_OF_STREAM));
+
+    OggDemuxer d;
+    DriveResult r = drive_packets(d, stream, SIZE_MAX);
+    CHECK(!r.errored);
+    CHECK_EQ(r.final_result, OGG_OK);
+    CHECK_EQ(r.packets.size(), 2);
+    CHECK(r.packets[0].data == make_pattern(1, 10));
+    CHECK(r.packets[1].data == make_pattern(2, 20));
+    return true;
+}
+
+// A BOS page has no predecessor, so its first packet cannot be a continuation.
+// A first page that sets the continued flag is self-contradictory and must be
+// rejected. The continuation check runs on the first page too, comparing
+// against the reset "no previous page" state.
+static bool test_bos_with_continued_flag_rejected() {
+    std::vector<uint8_t> stream;
+    append_bytes(stream, page_with_packets({make_pattern(1, 10)}, 1, 0, 0,
+                                           OGG_BEGINNING_OF_STREAM | OGG_CONTINUED_PACKET));
+
+    OggDemuxer d;
+    DriveResult r = drive_packets(d, stream, SIZE_MAX);
+    CHECK(r.errored);
+    CHECK_EQ(r.final_result, OGG_STREAM_CONTINUATION_ERROR);
+    return true;
+}
+
 static bool test_eos_with_continued_packet() {
     std::vector<uint8_t> stream;
     append_bytes(stream,
@@ -1608,6 +1663,9 @@ static const TestCase TESTS[] = {
     {"serial_mismatch", test_serial_mismatch},
     {"page_sequence_error", test_page_sequence_error},
     {"continuation_flag_mismatch", test_continuation_flag_mismatch},
+    {"continuation_flag_mismatch_sequence_wrap", test_continuation_flag_mismatch_sequence_wrap},
+    {"sequence_wrap_valid", test_sequence_wrap_valid},
+    {"bos_with_continued_flag_rejected", test_bos_with_continued_flag_rejected},
     {"eos_with_continued_packet", test_eos_with_continued_packet},
     {"granule_position_propagation", test_granule_position_propagation},
     {"reset_reuse", test_reset_reuse},
